@@ -1,0 +1,34 @@
+Hello {{ code }}
+
+<form action="/setusername" method="post">
+    <input type="text" name="username" placeholder="Enter your username">
+    <input type="submit" value="Set Username">
+</form>
+
+<br>
+<form action="/joingame" method="post">
+    <input type="text" name="game_code" placeholder="Enter game code">
+    <input type="submit" value="Join Game">
+</form>
+
+{% if game_code %}
+<form action="/joingame" method="post">
+    <input type="hidden" name="game_code" value="{{ game_code }}">
+    <button type="submit">ReJoin Game: {{ game_code }}</button>
+</form>
+    
+{% endif %}
+
+<br>
+
+<form action="/newgame" method="post">
+    <input type="submit" value="Create New Game">
+</form>
+
+{% with messages = get_flashed_messages() %}
+    {% if messages %}
+        {% for message in messages %}
+            <p>{{ message }}</p>
+        {% endfor %}
+    {% endif %}
+{% endwith %}

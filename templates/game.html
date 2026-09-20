@@ -1,0 +1,124 @@
+<style>
+    body {
+        text-align: center;
+        font-family: Arial, sans-serif;
+        margin: 20px;
+    }
+    button {
+        margin: 4px;
+        padding: 8px 12px;
+        font-size: 18px;
+        background: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    button:hover {
+        background: #45a049;
+    }
+    input[type="text"] {
+        padding: 8px;
+        font-size: 16px;
+        border-radius: 4px;
+        border: 1px solid #ccc;
+    }
+    input[type="submit"] {
+        padding: 8px 16px;
+        font-size: 16px;
+        background: #2196F3;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    p {
+        margin: 10px 0;
+    }
+    form {
+        margin: 15px auto;
+        max-width: fit-content;
+    }
+</style>
+
+<h1>Partie {{ game_code }} | User: {{ username }} | Nb de mots restants : {{ nb_words }}</h1>
+
+<p>Mot : {{ word }}</p>
+
+<p>On joue pour {{ money }}</p>
+
+<p {% if ifplay != 1 %} style="display:none;" {% endif %}>Lettres disponibles :</p>
+
+<form action="/guess" method="post" {% if ifplay != 1 %} style="display:none;" {% endif %}>
+    <input type="hidden" name="game_code" value="{{ game_code }}">
+    <p>Voyelles | Prise : 2500</p>
+    {% for y in voyelles %}
+        <button type="submit" name="letter" value="{{ y }}">{{ y }}</button>
+    {% endfor %}
+    <br>
+    <p>Consonnes</p>
+    {% for c in consonnes %}
+        <button type="submit" name="letter" value="{{ c }}">{{ c }}</button>
+    {% endfor %}
+</form>
+
+<form action="/guess" method="post" {% if ifplay != 1 %} style="display:none;" {% endif %}>
+    <input type="hidden" name="game_code" value="{{ game_code }}">
+    <input type="text" name="text" placeholder="Entrez votre proposition" onfocus="this.select()">
+    <input type="submit" value="Proposer">
+</form>
+
+{% with messages = get_flashed_messages() %}
+    {% if messages %}
+        {% for message in messages %}
+            <p>{{ message }}</p>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+<p>Joueur actuel : {{ playerplay }} || Liste des joueurs : {{ listplayers }}</p>
+
+<!-- Script optimisé pour détecter les changements d'état via hash -->
+<script>
+    const gameCode = "{{ game_code }}";
+    let currentHash = null;
+
+    // Fonction pour récupérer le hash actuel de la partie
+    async function fetchGameHash() {
+        try {
+            const response = await fetch(`/api/update/hash`, {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: `game_code=${encodeURIComponent(gameCode)}`
+            });
+            const data = await response.json();
+            return data.hash;
+        } catch (error) {
+            console.error("Erreur lors de la récupération du hash :", error);
+            return null;
+        }
+    }
+
+    // Fonction pour vérifier les changements
+    async function checkForChanges() {
+        const newHash = await fetchGameHash();
+        if (newHash && newHash !== currentHash) {
+            currentHash = newHash;
+            window.location.reload(); // Recharge si le hash a changé
+        }
+    }
+
+    // Initialisation
+    (async () => {
+        currentHash = await fetchGameHash();
+        // Vérifie toutes les 1.5 secondes si ce n'est pas le tour du joueur (comme avant)
+        // ou toutes les 5 secondes si c'est son tour (moins fréquent)
+        const interval = {% if ifplay != 1 %}1500{% else %}5000{% endif %};
+        setInterval(checkForChanges, interval);
+    })();
+
+    // Détection du changement de hash dans l'URL (si utilisé)
+    window.addEventListener("hashchange", () => {
+        window.location.reload();
+    });
+</script>
