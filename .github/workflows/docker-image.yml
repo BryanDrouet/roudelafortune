@@ -1,4 +1,4 @@
-name: Docker Image CI
+name: Docker Image and test
 
 on:
   push:
@@ -7,12 +7,27 @@ on:
     branches: [ "main" ]
 
 jobs:
-
-  build:
-
+  build-and-test:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+      - uses: actions/checkout@v4
+
+      - name: Build the Docker image
+        run: docker build . --file Dockerfile --tag my-image-name:ci
+
+      - name: Run the Docker image
+        run: docker run -d --name web -p 8000:8000 my-image-name:ci
+
+      - name: Attendre que le serveur démarre
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000 && break
+            sleep 2
+          done
+
+      - name: test-web-accessibility
+        uses: harryzhou1987/test-web-accessibility@v0.0.1
+        with:
+          URLs: |
+            "http://127.0.0.1:8000"
+          ERROR_THRESHOLD: 0
