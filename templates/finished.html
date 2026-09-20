@@ -1,0 +1,57 @@
+<style>
+    body {
+        text-align: center;
+        font-family: Arial, sans-serif;
+        margin: 20px;
+    }
+    button {
+        margin: 4px;
+        padding: 8px 12px;
+        font-size: 18px;
+        background: #4CAF50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    button:hover {
+        background: #45a049;
+    }
+    h1 {
+        color: #4CAF50;
+    }
+    .players {
+        margin: 20px auto;
+        max-width: 300px;
+        text-align: left;
+    }
+    .player-item {
+        padding: 5px;
+        border-bottom: 1px solid #eee;
+    }
+</style>
+
+{% with messages = get_flashed_messages() %}
+    {% if messages %}
+        {% for message in messages %}
+            <p>{{ message }}</p>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+<h1>Partie {{ game_code }} terminée !</h1>
+
+<p>Le mot à deviner était : <strong>{{ word }}</strong></p>
+
+<h2>Joueurs de la partie :</h2>
+<div class="players">
+    {% for player in listplayers %}
+        <div class="player-item">{{ player.name }} : {{ player.score }} points</div>
+    {% endfor %}
+</div>
+
+<p>Félicitations au gagnant !</p>
+
+<form action="/" method="get">
+    <input type="submit" value="Retour à l'accueil">
+</form>
