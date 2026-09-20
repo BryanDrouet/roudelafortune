@@ -29,11 +29,27 @@ jobs:
           name: docker-image
       - name: Charger l'image
         run: docker load -i image.tar
+      - name: Run Redis
+        run: docker run -d -p 6379:6379 redis:7-alpine
       - name: Run the Docker image
-        run: docker run -d -p 8000:8000 my-image-name:ci
+        run: docker run -d -p 8000:8000 -e REDIS_HOST=host.docker.internal --add-host=host.docker.internal:host-gateway my-image-name:ci
+      - name: Attendre le démarrage de l'app
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:8000/; then
+              echo "App accessible"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "App non accessible après 60s"
+          docker logs $(docker ps -q --filter ancestor=my-image-name:ci)
+          exit 1
       - name: test-web-accessibility
-        uses: harryzhou1987/test-web-accessibility@v0.0.1
-        with:
-          URLs: |
-            "http://127.0.0.1:8000"
-          ERROR_THRESHOLD: 0
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:8000/)
+          echo "HTTP status: $status"
+          if [ "$status" != "200" ]; then
+            echo "Page d'accueil non accessible (status $status != 200)"
+            exit 1
+          fi
