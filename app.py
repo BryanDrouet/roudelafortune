@@ -67,7 +67,7 @@ def index():
     else:
         username = request.cookies.get("username")
     resp = make_response(render_template("index.html", code=username))
-    resp.set_cookie('username', str(username), max_age=3600, secure=True, httponly=True)
+    resp.set_cookie('username', str(username), max_age=3600, secure=request.is_secure, httponly=True)
     return resp
 
 @app.route("/setusername/", methods=["GET", "POST"])
@@ -88,7 +88,7 @@ def set_username():
 
     r.set(f"user:{username}", username, ex=3600)
     resp = redirect(url_for("index"))
-    resp.set_cookie('username', username, max_age=3600, secure=True, httponly=True)
+    resp.set_cookie('username', username, max_age=3600, secure=request.is_secure, httponly=True)
     return resp
 
 ## join game logique
