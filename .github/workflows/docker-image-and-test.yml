@@ -47,9 +47,11 @@ jobs:
           exit 1
       - name: test-web-accessibility
         run: |
-          status=$(curl -s -o /dev/null -w "%{http_code}" -L http://127.0.0.1:8000/)
+          rm -f /tmp/cookies
+          status=$(curl -s -o /dev/null -w "%{http_code}" -c /tmp/cookies -b /tmp/cookies -L http://127.0.0.1:8000/)
           echo "HTTP status: $status"
           if [ "$status" != "200" ]; then
             echo "Page d'accueil non accessible (status $status != 200)"
+            docker logs $(docker ps -q --filter ancestor=my-image-name:ci)
             exit 1
           fi
