@@ -365,6 +365,8 @@ def guess():
                 pd = pandas.read_csv("data/data.csv")
                 pd = pd["data"]
                 new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
+                while new_word == word:  # Assurez-vous que le nouveau mot est différent de l'ancien
+                    new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
                 r.set(f"game:{game_code}:word", new_word, ex=3600)
                 r.delete(f"game:{game_code}:{word}")  # Supprime l'ancienne liste de lettres
                 r.rpush(f"game:{game_code}:{new_word}", *all_letters)  # Crée une nouvelle liste de lettres pour le nouveau mot
