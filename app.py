@@ -349,6 +349,7 @@ def guess():
                 flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! La partie est terminée.")
                 return redirect(url_for("game"))
             else:
+                r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
                 score = word.count(letter)  # Récupère le nombre de lettres du mot pour le score
                 flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! Il reste {int(nb_words) - 1} mots à deviner.")
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
@@ -356,6 +357,8 @@ def guess():
                 pd = pandas.read_csv("data/data.csv")
                 pd = pd["data"]
                 new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
+                while new_word == word:  # Assurez-vous que le nouveau mot est différent de l'ancien
+                    new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
                 r.set(f"game:{game_code}:word", new_word, ex=3600)
                 r.delete(f"game:{game_code}:{word}")  # Supprime l'ancienne liste de lettres
                 r.rpush(f"game:{game_code}:{new_word}", *all_letters)  # Crée une nouvelle liste de lettres pour le nouveau mot
