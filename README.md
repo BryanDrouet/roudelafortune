@@ -4,4 +4,4 @@
 
 1) comprendre ton code (pas ia slop)
 2) 100% autonome pas de db sur firebase, subabase, etc
-2) pas de connexion a un compte 
+3) pas de connexion a un compte 
