@@ -38,6 +38,7 @@ def generate_game_hash(game_code):
 app = Flask(__name__)
 
 random.seed()
+secure_random = random.SystemRandom()
 key = random.randrange(1111111111, 9999999999, 1)
 app.secret_key = os.getenv("SECRET_KEY", f"secret_key_{key}")
 
@@ -47,15 +48,26 @@ try:
     pd = pd["data"]
 
     print("Pandas connection successful")
+
 except Exception as e:
     print(f"Error connecting to pandas: {e}")
-
-else:
     pd = None
 
-if pd is not None:
-    
-    print(pd.sample(1).values.tolist()[0])
+
+def get_available_words(exclude=None):
+    try:
+        words = pandas.read_csv("data/data.csv")["data"].dropna().astype(str).str.strip()
+        words = list(dict.fromkeys(word for word in words if word))
+        if exclude is not None:
+            words = [word for word in words if word != exclude]
+        if not words:
+            return "defaultword"
+        print(f"Successfully read {len(words)} distinct words from CSV.")
+        return secure_random.choice(words)
+    except Exception as e:
+        print(f"Error reading words from CSV: {e}")
+        return "defaultword"  # Fallback word list
+
 
 ## User logique
 @app.route("/")
@@ -96,17 +108,15 @@ def set_username():
 def newgame():
     username = request.cookies.get("username")
 
-    if request.cookies.get("game"):
-        return redirect(url_for("game"))
-
     if not username:
         return redirect(url_for("index"))
 
-    pd = pandas.read_csv("data/data.csv")
-    pd = pd["data"]
+    if request.cookies.get("game"):
+        return redirect(url_for("game"))
 
     code = str(random.randrange(1111, 9999))
-    word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
+
+    word = str(get_available_words())  # Récupère un mot aléatoire depuis le CSV
 
     # Une partie par code, associée à son utilisateur
     r.set(f"game:{code}", username, ex=3600)
@@ -362,11 +372,7 @@ def guess():
                 flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! Il reste {int(nb_words) - 1} mots à deviner.")
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
                 # Choisir un nouveau mot aléatoire
-                pd = pandas.read_csv("data/data.csv")
-                pd = pd["data"]
-                new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
-                while new_word == word:  # Assurez-vous que le nouveau mot est différent de l'ancien
-                    new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
+                new_word = get_available_words(exclude=word)
                 r.set(f"game:{game_code}:word", new_word, ex=3600)
                 r.delete(f"game:{game_code}:{word}")  # Supprime l'ancienne liste de lettres
                 r.rpush(f"game:{game_code}:{new_word}", *all_letters)  # Crée une nouvelle liste de lettres pour le nouveau mot
