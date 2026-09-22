@@ -20,11 +20,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copie TOUT le reste (y compris uwsgi.ini et app.py)
 COPY . .
 
-# Variable d'environnement
-ENV PORT=8000
+# Port par défaut, modifiable au build (docker build --build-arg PORT=...) ou à l'exécution (-e PORT=...)
+ARG PORT=8000
+ENV PORT=${PORT}
 
 # Port exposé
-EXPOSE 8000
+EXPOSE ${PORT}
 
 # Commande de lancement
 CMD ["uwsgi", "--ini", "uwsgi.ini"]
