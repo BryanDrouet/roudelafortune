@@ -28,4 +28,4 @@ ENV PORT=${PORT}
 EXPOSE ${PORT}
 
 # Commande de lancement
-CMD ["uwsgi", "--ini", "uwsgi.ini"]
+CMD ["sh", "-c", "exec uwsgi --ini uwsgi.ini --http 0.0.0.0:${PORT:-8000}"]
