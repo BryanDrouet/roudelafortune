@@ -47,15 +47,26 @@ try:
     pd = pd["data"]
 
     print("Pandas connection successful")
-except Exception as e:
+
     print(f"Error connecting to pandas: {e}")
 
-else:
+except Exception as e:
+    print(f"Error connecting to pandas: {e}")
     pd = None
 
-if pd is not None:
-    
-    print(pd.sample(1).values.tolist()[0])
+
+def get_available_words():
+    try:
+        pd = pandas.read_csv("data/data.csv")
+        data = pd["data"].tolist()
+        nb_words = len(data)
+        print(f"Successfully read {nb_words} words from CSV.")
+        N = random.randint(0, nb_words - 1)
+        return data[N]
+    except Exception as e:
+        print(f"Error reading words from CSV: {e}")
+        return "defaultword"  # Fallback word list
+
 
 ## User logique
 @app.route("/")
@@ -99,14 +110,9 @@ def newgame():
     if request.cookies.get("game"):
         return redirect(url_for("game"))
 
-    if not username:
-        return redirect(url_for("index"))
-
-    pd = pandas.read_csv("data/data.csv")
-    pd = pd["data"]
-
     code = str(random.randrange(1111, 9999))
-    word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
+
+    word = str(get_available_words())  # Récupère un mot aléatoire depuis le CSV
 
     # Une partie par code, associée à son utilisateur
     r.set(f"game:{code}", username, ex=3600)
@@ -362,11 +368,9 @@ def guess():
                 flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! Il reste {int(nb_words) - 1} mots à deviner.")
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
                 # Choisir un nouveau mot aléatoire
-                pd = pandas.read_csv("data/data.csv")
-                pd = pd["data"]
-                new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
+                new_word = get_available_words()
                 while new_word == word:  # Assurez-vous que le nouveau mot est différent de l'ancien
-                    new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
+                    new_word = get_available_words()
                 r.set(f"game:{game_code}:word", new_word, ex=3600)
                 r.delete(f"game:{game_code}:{word}")  # Supprime l'ancienne liste de lettres
                 r.rpush(f"game:{game_code}:{new_word}", *all_letters)  # Crée une nouvelle liste de lettres pour le nouveau mot
