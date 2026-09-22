@@ -12,7 +12,7 @@ voyelles = ["a", "e", "i", "o", "u", "y"]
 consonnes = ["b", "c", "d", "f", "g", "h", "j", "k", "l", "m", "n", "p", "q", "r", "s", "t", "v", "w", "x", "z"]
 all_letters = voyelles + consonnes
 print("All letters:", all_letters)
-port=int(os.getenv("PORT", 5000))
+port=int(os.getenv("PORT") or 8000)
 
 # Connexion à Redis
 r = redis.Redis(
