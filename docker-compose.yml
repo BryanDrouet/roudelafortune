@@ -1,26 +1,31 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    command: ["redis-server", "--port", "${REDIS_PORT:-6379}"]
+    expose:
+      - "${REDIS_PORT:-6379}"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT:-6379}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
     restart: unless-stopped
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        PORT: ${PORT:-8000}
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:${PORT:-8000}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - REDIS_HOST=host.docker.internal
-      - REDIS_PORT=6379
+      - PORT=${PORT:-8000}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
     depends_on:
       redis:
         condition: service_healthy

@@ -157,7 +157,8 @@ def joingame(game_code=None):
             secure=request.is_secure,
             httponly=True
         )
-        r.lpush(f"game:{game_code}:players", username)
+        if username not in r.lrange(f"game:{game_code}:players", 0, -1):
+            r.lpush(f"game:{game_code}:players", username)
         return resp
 
     flash(f"Partie inconnue : {game_code}")
@@ -204,7 +205,13 @@ def waiting():
         return redirect(url_for("index"))
 
     if r.get(f"game:{game_code}:status") == "waiting" and username in r.lrange(f"game:{game_code}:players", 0, -1):
-        return render_template("waiting.html", game_code=game_code, players= r.lrange(f"game:{game_code}:players", 0, -1), username=username, admin=(r.get(f"game:{game_code}") == username, r.get(f"game:{game_code}:nb_words") or 1))
+        return render_template("waiting.html",
+                               game_code=game_code,
+                               players=r.lrange(f"game:{game_code}:players", 0, -1),
+                               username=username,
+                               admin=(r.get(f"game:{game_code}") == username),
+                               nb_words=int(r.get(f"game:{game_code}:nb_words") or 1)
+                               )
 
     flash(f"Partie inconnue : {game_code}")
     return redirect(url_for("index"))
@@ -232,13 +239,14 @@ def game():
 
         # Affiche le mot avec les lettres non disponibles masquées
         display_word = "".join([
-            letter if letter not in available_letters else (letter if letter not in all_letters else "X")
-            for letter in word
+            char if char not in available_letters else (char if char not in all_letters else "X")
+            for char in word
         ])
 
         ## Récupère "id" du joueur qui joue actuellement et le contrôle pour savoir si c'est le tour du joueur actuel
         playerplay = r.get(f"game:{game_code}:playerplay")
         listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
+        ifplay = False
         if not playerplay:
             r.set(f"game:{game_code}:playerplay", 0, ex=3600)
             playerplay = 0
@@ -265,7 +273,8 @@ def game():
                               ifplay=ifplay if 'ifplay' in locals() else False,
                               playerplay=listplayers[int(playerplay)],
                               listplayers=listplayers_dysplay,
-                              money=int(r.get(f'game:{game_code}:money') or 0)
+                              money=int(r.get(f'game:{game_code}:money') or 0),
+                              nb_words=int(r.get(f"game:{game_code}:nb_words") or 1)
                               )
 
     if r.get(f"game:{game_code}:status") == "finished":
@@ -349,8 +358,7 @@ def guess():
                 flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! La partie est terminée.")
                 return redirect(url_for("game"))
             else:
-                r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
-                score = word.count(letter)  # Récupère le nombre de lettres du mot pour le score
+                score = word.count(text)  # Récupère le nombre de lettres du mot pour le score
                 flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! Il reste {int(nb_words) - 1} mots à deviner.")
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
                 # Choisir un nouveau mot aléatoire
