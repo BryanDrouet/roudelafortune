@@ -38,6 +38,7 @@ def generate_game_hash(game_code):
 app = Flask(__name__)
 
 random.seed()
+secure_random = random.SystemRandom()
 key = random.randrange(1111111111, 9999999999, 1)
 app.secret_key = os.getenv("SECRET_KEY", f"secret_key_{key}")
 
@@ -48,21 +49,21 @@ try:
 
     print("Pandas connection successful")
 
-    print(f"Error connecting to pandas: {e}")
-
 except Exception as e:
     print(f"Error connecting to pandas: {e}")
     pd = None
 
 
-def get_available_words():
+def get_available_words(exclude=None):
     try:
-        pd = pandas.read_csv("data/data.csv")
-        data = pd["data"].tolist()
-        nb_words = len(data)
-        print(f"Successfully read {nb_words} words from CSV.")
-        N = random.randint(0, nb_words - 1)
-        return data[N]
+        words = pandas.read_csv("data/data.csv")["data"].dropna().astype(str).str.strip()
+        words = list(dict.fromkeys(word for word in words if word))
+        if exclude is not None:
+            words = [word for word in words if word != exclude]
+        if not words:
+            return "defaultword"
+        print(f"Successfully read {len(words)} distinct words from CSV.")
+        return secure_random.choice(words)
     except Exception as e:
         print(f"Error reading words from CSV: {e}")
         return "defaultword"  # Fallback word list
@@ -106,6 +107,9 @@ def set_username():
 @app.route("/newgame", methods=["POST"])
 def newgame():
     username = request.cookies.get("username")
+
+    if not username:
+        return redirect(url_for("index"))
 
     if request.cookies.get("game"):
         return redirect(url_for("game"))
@@ -368,9 +372,7 @@ def guess():
                 flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! Il reste {int(nb_words) - 1} mots à deviner.")
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
                 # Choisir un nouveau mot aléatoire
-                new_word = get_available_words()
-                while new_word == word:  # Assurez-vous que le nouveau mot est différent de l'ancien
-                    new_word = get_available_words()
+                new_word = get_available_words(exclude=word)
                 r.set(f"game:{game_code}:word", new_word, ex=3600)
                 r.delete(f"game:{game_code}:{word}")  # Supprime l'ancienne liste de lettres
                 r.rpush(f"game:{game_code}:{new_word}", *all_letters)  # Crée une nouvelle liste de lettres pour le nouveau mot
