@@ -1,34 +1,55 @@
-Hello {{ code }}
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <title>Roue de la Fortune</title>
+  </head>
+  <body>
+    <h1>Roue de la Fortune</h1>
 
-<form action="/setusername" method="post">
-    <input type="text" name="username" placeholder="Enter your username">
-    <input type="submit" value="Set Username">
-</form>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <ul>
+          {% for message in messages %}
+            <li>{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
 
-<br>
-<form action="/joingame" method="post">
-    <input type="text" name="game_code" placeholder="Enter game code">
-    <input type="submit" value="Join Game">
-</form>
+    <section>
+      <h2>Mon pseudo</h2>
+      <form action="/setusername" method="post">
+        <label for="username">Pseudo</label>
+        <input id="username" type="text" name="username" placeholder="Entrez votre pseudo" required minlength="3" maxlength="20">
+        <button type="submit">Valider le pseudo</button>
+      </form>
+    </section>
 
-{% if game_code %}
-<form action="/joingame" method="post">
-    <input type="hidden" name="game_code" value="{{ game_code }}">
-    <button type="submit">ReJoin Game: {{ game_code }}</button>
-</form>
-    
-{% endif %}
+    <section>
+      <h2>Rejoindre une partie</h2>
+      <form action="/joingame" method="post">
+        <label for="game_code">Code de la partie</label>
+        <input id="game_code" type="text" name="game_code" placeholder="Entrez le code" required>
+        <button type="submit">Rejoindre</button>
+      </form>
+    </section>
 
-<br>
+    <section>
+      <h2>Créer une partie</h2>
+      <form action="/newgame" method="post">
+        <button type="submit">Créer une nouvelle partie</button>
+      </form>
+    </section>
 
-<form action="/newgame" method="post">
-    <input type="submit" value="Create New Game">
-</form>
-
-{% with messages = get_flashed_messages() %}
-    {% if messages %}
-        {% for message in messages %}
-            <p>{{ message }}</p>
-        {% endfor %}
+    {% if game_code %}
+      <section>
+        <h2>Reprendre une partie</h2>
+        <form action="/joingame" method="post">
+          <input type="hidden" name="game_code" value="{{ game_code }}">
+          <button type="submit">Reprendre la partie : {{ game_code }}</button>
+        </form>
+      </section>
     {% endif %}
-{% endwith %}
+  </body>
+</html>
