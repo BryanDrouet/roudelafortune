@@ -72,16 +72,10 @@ def get_available_words(exclude=None):
 ## User logique
 @app.route("/")
 def index():
-    username = None
-    if not request.cookies.get("username"):
-        username = random.randrange(1111,9999,1)
-        return redirect(url_for("set_username", username=username))
-    else:
-        username = request.cookies.get("username")
-    resp = make_response(render_template("index.html", code=username))
-    resp.set_cookie('username', str(username), max_age=3600, secure=request.is_secure, httponly=True)
-    return resp
+    username = request.cookies.get("username")
+    return render_template("index.html", code=username, game_code=request.cookies.get("game"))
 
+@app.route("/setusername", methods=["GET", "POST"])
 @app.route("/setusername/", methods=["GET", "POST"])
 def set_username():
     if request.method == "POST":
@@ -90,6 +84,16 @@ def set_username():
         username = request.args.get("username")
         if not username:
             return redirect(url_for("index"))
+
+    if username is None:
+        flash("Le pseudo est obligatoire.")
+        return redirect(url_for("index"))
+
+    username = username.strip()
+
+    if not username:
+        flash("Le pseudo est obligatoire.")
+        return redirect(url_for("index"))
 
     if len(username) < 3 or len(username) > 20:
         flash("Le nom d'utilisateur doit contenir entre 3 et 20 caractères.")
