@@ -35,7 +35,7 @@ def test_hash_changes_when_letters_are_removed():
     assert old_hash != generate_game_hash(game_code)
 
 
-def test_all_players_skip_does_not_award_points_and_advances_turn(client):
+def test_all_players_skip_does_not_award_points_and_keeps_current_player(client):
     game_code = "SKIP01"
     word = "casa"
     r.set(f"game:{game_code}", "A", ex=3600)
@@ -238,6 +238,29 @@ def test_index_hides_stale_resume_and_unknown_game_flash_is_sentence(client):
     assert b"est inconnue." in join_resp.data
 
 
+def test_player_can_join_a_game_already_in_progress(client):
+    game_code = "INPROG1"
+    word = "casa"
+    r.set(f"game:{game_code}", "alice", ex=3600)
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.set(f"game:{game_code}:money", 100, ex=3600)
+    r.set(f"game:{game_code}:nb_words", 2, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    r.rpush(f"game:{game_code}:{word}", *all_letters)
+    r.expire(f"game:{game_code}:{word}", 3600)
+    r.set("user:bob", "bob", ex=3600)
+
+    client.set_cookie("username", "bob", domain="localhost")
+    resp = client.post("/joingame", data={"game_code": game_code}, follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"est inconnue." not in resp.data
+    assert "bob" in r.lrange(f"game:{game_code}:players", 0, -1)
+
+
+
 def test_all_players_skip_reloads_word_in_redis(client, monkeypatch):
     game_code = "SKIP02"
     old_word = "casa"
@@ -266,3 +289,126 @@ def test_all_players_skip_reloads_word_in_redis(client, monkeypatch):
     assert r.get(f"game:{game_code}:word") == new_word
     assert r.get(f"game:{game_code}:skip_votes") is None
     assert not r.exists(f"game:{game_code}:{old_word}")
+
+
+def test_winner_of_the_word_plays_first_on_the_next_round(client, monkeypatch):
+    game_code = "WIN01"
+    word = "casa"
+    new_word = "moto"
+    monkeypatch.setattr(app_module, "get_available_words", lambda exclude=None: new_word)
+
+    r.set(f"game:{game_code}", "A", ex=3600)
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 1, ex=3600)
+    r.set(f"game:{game_code}:money", 100, ex=3600)
+    r.set(f"game:{game_code}:nb_words", 2, ex=3600)
+    r.rpush(f"game:{game_code}:players", "A", "B")
+    r.expire(f"game:{game_code}:players", 3600)
+    r.rpush(f"game:{game_code}:{word}", *all_letters)
+    r.expire(f"game:{game_code}:{word}", 3600)
+
+    # C'est le tour de B, qui devine le mot entier.
+    client.set_cookie("username", "B", domain="localhost")
+    resp = client.post("/guess", data={"game_code": game_code, "text": word})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:word") == new_word
+    assert r.get(f"game:{game_code}:playerplay") == "1"
+
+
+def test_any_player_can_vote_skip_regardless_of_turn(client):
+    game_code = "SKIP03"
+    word = "casa"
+    r.set(f"game:{game_code}", "A", ex=3600)
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.lpush(f"game:{game_code}:players", "B", "A")
+    r.expire(f"game:{game_code}:players", 3600)
+    r.rpush(f"game:{game_code}:{word}", *all_letters)
+    r.expire(f"game:{game_code}:{word}", 3600)
+
+    # C'est le tour de A, mais B peut quand même voter pour passer immédiatement.
+    client.set_cookie("username", "B", domain="localhost")
+    resp = client.post("/guess", data={"game_code": game_code, "action": "skip"})
+
+    assert resp.status_code == 302
+    assert r.smembers(f"game:{game_code}:skip_votes") == {"B"}
+    assert r.get(f"game:{game_code}:playerplay") == "0"
+
+
+def test_generate_game_hash_does_not_crash_after_a_skip_vote(client):
+    game_code = "SKIP04"
+    word = "casa"
+    r.set(f"game:{game_code}", "A", ex=3600)
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.lpush(f"game:{game_code}:players", "B", "A")
+    r.expire(f"game:{game_code}:players", 3600)
+    r.rpush(f"game:{game_code}:{word}", *all_letters)
+    r.expire(f"game:{game_code}:{word}", 3600)
+
+    client.set_cookie("username", "A", domain="localhost")
+    client.post("/guess", data={"game_code": game_code, "action": "skip"})
+
+    # Générer un hash lisait 'skip_votes' comme une liste alors que c'est un set, ce qui plantait la synchronisation live.
+    game_hash = app_module.generate_game_hash(game_code)
+    assert isinstance(game_hash, str) and len(game_hash) == 8
+
+
+def test_finished_page_shows_winner_and_restart_button_for_admin(client):
+    game_code = "END01"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", "casa", ex=3600)
+    r.rpush(f"game:{game_code}:players", "admin", "bob")
+    r.set(f"game:{game_code}:score:admin", 500, ex=3600)
+    r.set(f"game:{game_code}:score:bob", 900, ex=3600)
+
+    client.set_cookie("username", "admin", domain="localhost")
+    client.set_cookie("game", game_code, domain="localhost")
+
+    resp = client.get("/game")
+
+    assert resp.status_code == 200
+    assert b"Relancer la partie" in resp.data
+    assert b'<div class="player-name">bob</div>' in resp.data
+    assert resp.data.index(b'<div class="player-name">bob</div>') < resp.data.index(b'<div class="player-name">admin</div>')
+
+
+def test_restart_game_resets_state_and_returns_to_waiting(client):
+    game_code = "END02"
+    old_word = "casa"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", old_word, ex=3600)
+    r.rpush(f"game:{game_code}:players", "admin", "bob")
+    r.rpush(f"game:{game_code}:{old_word}", *all_letters)
+    r.set(f"game:{game_code}:score:admin", 500, ex=3600)
+    r.set(f"game:{game_code}:score:bob", 900, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 1, ex=3600)
+
+    client.set_cookie("username", "admin", domain="localhost")
+    resp = client.post("/restartgame", data={"game_code": game_code}, follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert r.get(f"game:{game_code}:status") == "waiting"
+    assert r.get(f"game:{game_code}:score:admin") is None
+    assert r.get(f"game:{game_code}:score:bob") is None
+    assert r.get(f"game:{game_code}:playerplay") is None
+    assert r.lrange(f"game:{game_code}:players", 0, -1) == ["admin", "bob"]
+
+
+def test_restart_game_rejects_non_admin(client):
+    game_code = "END03"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.rpush(f"game:{game_code}:players", "admin", "bob")
+
+    client.set_cookie("username", "bob", domain="localhost")
+    resp = client.post("/restartgame", data={"game_code": game_code}, follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert r.get(f"game:{game_code}:status") == "finished"

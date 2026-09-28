@@ -2,6 +2,11 @@
 .waiting-shell {
     max-width: 1200px;
     margin: 0 auto;
+    position: relative;
+}
+
+.finished-shell {
+    position: relative;
 }
 
 .game-shell,
@@ -15,6 +20,70 @@
 
 .game-controls {
 	gap: 10px;
+}
+
+.cursor-container {
+	position: relative;
+}
+
+.cursor-layer {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: hidden;
+	z-index: 40;
+}
+
+.remote-cursor {
+	position: absolute;
+	pointer-events: none;
+	/* Interpole en douceur entre deux positions reçues, sans ajouter de retard perceptible. */
+	transition: left 0.15s linear, top 0.15s linear;
+}
+
+.remote-cursor-pointer {
+	display: block;
+	color: var(--info);
+	filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+}
+
+.remote-cursor-label {
+	position: absolute;
+	left: 16px;
+	top: 14px;
+	background: var(--text-strong);
+	color: white;
+	font-size: 0.7rem;
+	font-weight: 600;
+	padding: 2px 6px;
+	border-radius: 6px;
+	white-space: nowrap;
+}
+
+.remote-cursor.is-current .remote-cursor-pointer {
+	color: var(--gold);
+}
+
+.remote-cursor.is-current .remote-cursor-label {
+	background: var(--gold);
+	color: var(--text-strong);
+}
+
+.remote-cursor.is-admin .remote-cursor-label::before {
+	content: "★ ";
+}
+
+.skip-form {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+}
+
+.skip-tally {
+	color: var(--text-muted);
+	font-weight: 600;
+	font-size: 0.9rem;
 }
 
 .top-bar,
@@ -79,6 +148,13 @@
 }
 
 .player-token.current {
+    background: linear-gradient(135deg, var(--gold-soft), var(--gold-soft-2));
+    transform: scale(1.06);
+    box-shadow: 0 12px 28px rgba(255,183,3,0.33);
+}
+
+.player-token.winner {
+    border-color: var(--gold);
     background: linear-gradient(135deg, var(--gold-soft), var(--gold-soft-2));
     transform: scale(1.06);
     box-shadow: 0 12px 28px rgba(255,183,3,0.33);

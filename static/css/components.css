@@ -56,6 +56,27 @@ button:hover {
     background: var(--bg-accent);
 }
 
+.letter.used {
+    background: var(--bg-accent);
+    color: var(--text-muted);
+    cursor: not-allowed;
+}
+
+.letter.used:hover {
+    background: var(--bg-accent);
+}
+
+.letter.locked {
+    background: var(--success);
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.letter.locked:hover {
+    background: var(--success);
+    opacity: 0.45;
+}
+
 section {
         gap: 12px;
         display: flex;

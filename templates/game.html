@@ -8,9 +8,9 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/content.css') }}">
   </head>
-  <body data-page="game">
-    <div id="game-state" data-last-event="{{ 'true' if last_event else 'false' }}" data-player-turn="{{ 'true' if ifplay else 'false' }}"></div>
-    <div class="game-shell">
+  <body data-page="game" data-game-code="{{ game_code }}">
+    <div id="page-state" data-last-event="{{ 'true' if last_event else 'false' }}" data-player-turn="{{ 'true' if ifplay else 'false' }}" data-username="{{ username }}" data-admin="{{ 'true' if admin else 'false' }}" data-current-player="{{ playerplay }}"></div>
+    <div class="game-shell cursor-container">
         <div class="top-bar">
             <div class="status-group">
                 <span class="status-label">Partie</span>
@@ -47,41 +47,41 @@
             <div class="reveal-banner">Mot trouvé par {{ last_event.player }} : “{{ last_event.word }}”</div>
         {% endif %}
 
-        {% if ifplay %}
-            <div class="panel-card">
-                <div class="letters-section">
-                    <h3 class="letters-title">Voyelles</h3>
-                    <span class="letters-hint">Coûte 2500 points</span>
-                </div>
-                <form action="/guess" method="post">
-                    <input type="hidden" name="game_code" value="{{ game_code }}">
-                    {% for y in voyelles %}
-                        <button type="submit" name="letter" value="{{ y }}" class="letter{% if y not in available_letters %} disabled{% endif %}"{% if y not in available_letters %} disabled{% endif %}>{{ y }}</button>
-                    {% endfor %}
-                </form>
-
-                <div class="letters-section">
-                    <h3 class="letters-title">Consonnes</h3>
-                    <span class="letters-hint">Gratuites</span>
-                </div>
-                <form action="/guess" method="post">
-                    <input type="hidden" name="game_code" value="{{ game_code }}">
-                    {% for c in consonnes %}
-                        <button type="submit" name="letter" value="{{ c }}" class="letter{% if c not in available_letters %} disabled{% endif %}"{% if c not in available_letters %} disabled{% endif %}>{{ c }}</button>
-                    {% endfor %}
-                </form>
-
-                <div class="controls">
-                    <form action="/guess" method="post" class="form-stack">
-                        <input type="hidden" name="game_code" value="{{ game_code }}">
-                        <div class="field-group guess-field">
-                            <input type="text" name="text" placeholder="Entrez votre proposition" onfocus="this.select()">
-                            <input type="submit" value="Proposer" class="secondary-btn">
-                        </div>
-                    </form>
-                </div>
+        <div class="panel-card">
+            <div class="letters-section">
+                <h3 class="letters-title">Voyelles</h3>
+                <span class="letters-hint">Coûte 2500 points</span>
             </div>
-        {% endif %}
+            <form action="/guess" method="post">
+                <input type="hidden" name="game_code" value="{{ game_code }}">
+                {% for y in voyelles %}
+                    <button type="submit" name="letter" value="{{ y }}" class="letter{% if y not in available_letters %} used{% elif not ifplay %} locked{% endif %}"{% if y not in available_letters or not ifplay %} disabled{% endif %}>{{ y }}</button>
+                {% endfor %}
+            </form>
+
+            <div class="letters-section">
+                <h3 class="letters-title">Consonnes</h3>
+                <span class="letters-hint">Gratuites</span>
+            </div>
+            <form action="/guess" method="post">
+                <input type="hidden" name="game_code" value="{{ game_code }}">
+                {% for c in consonnes %}
+                    <button type="submit" name="letter" value="{{ c }}" class="letter{% if c not in available_letters %} used{% elif not ifplay %} locked{% endif %}"{% if c not in available_letters or not ifplay %} disabled{% endif %}>{{ c }}</button>
+                {% endfor %}
+            </form>
+
+            {% if ifplay %}
+            <div class="controls">
+                <form action="/guess" method="post" class="form-stack">
+                    <input type="hidden" name="game_code" value="{{ game_code }}">
+                    <div class="field-group guess-field">
+                        <input type="text" name="text" placeholder="Entrez votre proposition" onfocus="this.select()">
+                        <input type="submit" value="Proposer" class="secondary-btn">
+                    </div>
+                </form>
+            </div>
+            {% endif %}
+        </div>
 
         {% with messages = get_flashed_messages() %}
             {% if messages %}
@@ -92,13 +92,14 @@
         {% endwith %}
             
         <div class="game-controls">
-            {% if ifplay %}
-                <form action="/guess" method="post">
-                    <input type="hidden" name="game_code" value="{{ game_code }}">
-                    <input type="hidden" name="action" value="skip">
-                    <button type="submit" class="secondary-btn">Skip</button>
-                </form>
-            {% endif %}
+            <form action="/guess" method="post" class="skip-form">
+                <input type="hidden" name="game_code" value="{{ game_code }}">
+                <input type="hidden" name="action" value="skip">
+                <span class="skip-tally">{{ skip_votes_count }}/{{ listplayers|length }} ont voté pour passer</span>
+                <button type="submit" class="secondary-btn" {% if has_voted_skip %}disabled{% endif %}>
+                    {% if has_voted_skip %}Vote enregistré{% else %}Voter pour passer{% endif %}
+                </button>
+            </form>
 
             <form action="/leavegame" method="post">
                 <input type="hidden" name="game_code" value="{{ game_code }}">

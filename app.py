@@ -74,7 +74,7 @@ def generate_game_hash(game_code):
         "nb_words": r.get(f"game:{game_code}:nb_words"),
         "letters": r.lrange(f"game:{game_code}:{word}", 0, -1) if word else [],
         "last_event": r.get(f"game:{game_code}:last_event"),
-        "skip_votes": r.lrange(f"game:{game_code}:skip_votes", 0, -1)
+        "skip_votes": sorted(r.smembers(f"game:{game_code}:skip_votes"))
     }
     data_str = json.dumps(data, sort_keys=True)
     return hashlib.sha256(data_str.encode()).hexdigest()[:8]
@@ -314,7 +314,8 @@ def joingame(game_code=None):
     if not game_code:
         game_code = request.form.get("game_code")
 
-    game_exsit = r.get(f"game:{game_code}:status") == "waiting" and r.get(f"game:{game_code}") is not None
+    game_status = r.get(f"game:{game_code}:status")
+    game_exsit = game_status in ("waiting", "playing") and r.get(f"game:{game_code}") is not None
 
     if game_exsit:
         resp = redirect(url_for("game"))
@@ -416,6 +417,7 @@ def leave_game():
         players = r.lrange(f"game:{game_code}:players", 0, -1)
         if username in players:
             r.lrem(f"game:{game_code}:players", 0, username)
+        r.srem(f"game:{game_code}:skip_votes", username)
         release_username(username)
         flash(f"Vous avez quitté la salle '{game_code}'.")
 
@@ -473,6 +475,8 @@ def game():
         last_event_raw = r.get(f"game:{game_code}:last_event")
         last_event = json.loads(last_event_raw) if last_event_raw else None
 
+        skip_votes = set(r.smembers(f"game:{game_code}:skip_votes")) & set(listplayers)
+
         return render_template("game.html",
                               game_code=game_code,
                               username=username,
@@ -487,16 +491,63 @@ def game():
                               admin=(r.get(f"game:{game_code}") == username),
                               money=int(r.get(f'game:{game_code}:money') or 0),
                               nb_words=int(r.get(f"game:{game_code}:nb_words") or 1),
-                              last_event=last_event
+                              last_event=last_event,
+                              skip_votes_count=len(skip_votes),
+                              has_voted_skip=username in skip_votes
                               )
 
     if r.get(f"game:{game_code}:status") == "finished":
-        resp = make_response(render_template("finished.html", game_code=game_code, word=r.get(f"game:{game_code}:word"), listplayers=[{"name": player, "score": r.get(f"game:{game_code}:score:{player}") or 0} for player in r.lrange(f"game:{game_code}:players", 0, -1)]))
+        scoreboard = sorted(
+            [{"name": player, "score": int(r.get(f"game:{game_code}:score:{player}") or 0)} for player in r.lrange(f"game:{game_code}:players", 0, -1)],
+            key=lambda entry: entry["score"],
+            reverse=True
+        )
+        for index, entry in enumerate(scoreboard):
+            entry["is_winner"] = index == 0
+
+        resp = make_response(render_template("finished.html", game_code=game_code, word=r.get(f"game:{game_code}:word"), listplayers=scoreboard, username=username, admin=(r.get(f"game:{game_code}") == username)))
         resp.set_cookie('game', '', expires=0)
         return resp
 
     flash(f"La partie '{game_code}' est inconnue.")
     return redirect(url_for("index"))
+
+
+@app.route("/restartgame", methods=["POST"])
+def restart_game():
+    game_code = request.form.get("game_code")
+    username = request.cookies.get("username")
+
+    if not game_code or not username:
+        flash("Partie ou utilisateur introuvable.")
+        return redirect(url_for("index"))
+
+    if r.get(f"game:{game_code}") != username:
+        flash("Seul l'administrateur peut relancer la partie.")
+        return redirect(url_for("index"))
+
+    listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
+    old_word = r.get(f"game:{game_code}:word")
+
+    for player in listplayers:
+        r.delete(f"game:{game_code}:score:{player}")
+
+    if old_word:
+        r.delete(f"game:{game_code}:{old_word}")
+
+    r.delete(f"game:{game_code}:word")
+    r.delete(f"game:{game_code}:playerplay")
+    r.delete(f"game:{game_code}:last_event")
+    r.delete(f"game:{game_code}:skip_votes")
+    r.set(f"game:{game_code}:status", "waiting", ex=3600)
+    r.set(f"game:{game_code}:money", random.randrange(50, 1000, 50), ex=3600)
+    r.expire(f"game:{game_code}", 3600)
+    r.expire(f"game:{game_code}:players", 3600)
+
+    resp = redirect(url_for("waiting"))
+    resp.set_cookie("game", game_code, max_age=3600, secure=request.is_secure, httponly=True)
+    return resp
+
 
 
 
@@ -507,11 +558,36 @@ def guess():
     if not game_code or not username:
         flash("Partie ou utilisateur introuvable")
         return redirect(url_for("game"))
-    playerplay = r.get(f"game:{game_code}:playerplay")
+
     listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
-    if not playerplay:
+    playerplay = r.get(f"game:{game_code}:playerplay")
+    if not playerplay or not listplayers:
         flash("La partie est inconnue ou inactive.")
         return redirect(url_for("game"))
+
+    if request.form.get("action") == "skip":
+        if username not in listplayers:
+            flash("Vous ne faites pas partie de cette partie.")
+            return redirect(url_for("game"))
+
+        # Vote de passage ouvert à tout moment, indépendamment du tour de jeu.
+        r.sadd(f"game:{game_code}:skip_votes", username)
+        active_votes = set(r.smembers(f"game:{game_code}:skip_votes")) & set(listplayers)
+        r.delete(f"game:{game_code}:skip_votes")
+        if active_votes:
+            r.sadd(f"game:{game_code}:skip_votes", *active_votes)
+
+        if len(active_votes) >= len(listplayers):
+            r.delete(f"game:{game_code}:skip_votes")
+            current_word = r.get(f"game:{game_code}:word")
+            load_new_round_word(game_code, current_word)
+            # Le vote de passage change juste le mot, le joueur en cours garde la main.
+            flash("Tous les joueurs ont choisi de passer. Aucun point n'a été attribué et un nouveau mot a été choisi.")
+        else:
+            flash(f"{username} a voté pour passer ce mot ({len(active_votes)}/{len(listplayers)} votes).")
+
+        return redirect(url_for("game"))
+
     if listplayers[int(playerplay)] != username:
         flash(f"Ce n'est pas votre tour de jouer, c'est le tour de {listplayers[int(playerplay)]}.")
         return redirect(url_for("game"))
@@ -552,29 +628,6 @@ def guess():
         else:
             flash(f"La lettre '{letter}' n'est pas disponible pour cette partie.")
             return redirect(url_for("game"))
-    elif request.form.get("action") == "skip":
-        if listplayers[int(playerplay)] != username:
-            flash(f"Ce n'est pas votre tour de jouer, c'est le tour de {listplayers[int(playerplay)]}.")
-            return redirect(url_for("game"))
-
-        # On garde les votes de passage sous forme d'ensemble pour éviter les doublons.
-        skip_votes = set(r.smembers(f"game:{game_code}:skip_votes"))
-        skip_votes.add(username)
-        r.delete(f"game:{game_code}:skip_votes")
-        if skip_votes:
-            r.sadd(f"game:{game_code}:skip_votes", *sorted(skip_votes))
-
-        if len(skip_votes) >= len(listplayers):
-            r.delete(f"game:{game_code}:skip_votes")
-            current_word = r.get(f"game:{game_code}:word")
-            load_new_round_word(game_code, current_word)
-            r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
-            flash("Tous les joueurs ont choisi de passer. Aucun point n'a été attribué et un nouveau mot a été choisi.")
-            return redirect(url_for("game"))
-
-        r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
-        flash(f"{username} a demandé un skip. Il faut que tous les joueurs passent pour valider le tour.")
-        return redirect(url_for("game"))
 
     elif request.form.get("text"):
         text = request.form.get("text")
@@ -607,7 +660,8 @@ def guess():
                 flash(f"{final_message} Il reste {int(nb_words) - 1} mots à deviner.")
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
                 load_new_round_word(game_code, word)
-                r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
+                # Le gagnant du mot rejoue en premier sur le mot suivant.
+                r.set(f"game:{game_code}:playerplay", listplayers.index(username), ex=3600)
                 return redirect(url_for("game"))
         else:
             flash(f"Désolé {username}, ce n'est pas le bon mot.")
@@ -623,6 +677,65 @@ def get_redis():
     keys = r.keys()
     values = {key: r.get(key) for key in keys}
     return values
+
+
+## Curseurs des joueurs, façon Figma/Canva : chacun envoie sa position, les autres la récupèrent en direct.
+@app.route('/api/cursor', methods=['POST'])
+def update_cursor():
+    game_code = request.form.get("game_code")
+    username = request.cookies.get("username")
+    x = request.form.get("x")
+    y = request.form.get("y")
+
+    if not game_code or not username or x is None or y is None:
+        return {"error": "game_code, x et y sont requis"}, 400
+
+    try:
+        x = max(0.0, min(100.0, float(x)))
+        y = max(0.0, min(100.0, float(y)))
+    except ValueError:
+        return {"error": "x et y doivent être numériques"}, 400
+
+    # Expiration courte : le curseur disparaît vite si l'onglet est fermé ou inactif.
+    r.set(f"game:{game_code}:cursor:{username}", json.dumps({"x": x, "y": y}), ex=5)
+    return {"ok": True}, 200
+
+
+@app.route('/api/cursors', methods=['POST'])
+def list_cursors():
+    game_code = request.form.get("game_code")
+
+    if not game_code:
+        return {"error": "game_code is required"}, 400
+
+    admin_username = r.get(f"game:{game_code}")
+    listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
+    playerplay = r.get(f"game:{game_code}:playerplay")
+    current_player_name = None
+    if listplayers and playerplay is not None:
+        index = int(playerplay) if int(playerplay) < len(listplayers) else 0
+        current_player_name = listplayers[index]
+
+    prefix = f"game:{game_code}:cursor:"
+    cursors = []
+    for key in r.keys(f"{prefix}*"):
+        username = key[len(prefix):]
+        raw = r.get(key)
+        if not raw:
+            continue
+        try:
+            position = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        cursors.append({
+            "username": username,
+            "x": position.get("x", 0),
+            "y": position.get("y", 0),
+            "is_admin": username == admin_username,
+            "is_current": username == current_player_name
+        })
+
+    return {"cursors": cursors}, 200
 
 ## API route to update game data, can be used for a signal page or other purposes
 ## if update sinal page api 

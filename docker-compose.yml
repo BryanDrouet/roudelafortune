@@ -26,7 +26,7 @@ services:
       if [ \"${APP_MODE:-dev}\" = \"prod\" ]; then
         exec uwsgi --ini uwsgi.ini;
       else
-        exec flask --app app run --host 0.0.0.0 --port ${PORT:-8000} --debug --no-reload;
+        exec flask --app app run --host 0.0.0.0 --port ${PORT:-8000} --debug --no-reload --with-threads;
       fi
       "
     ports:

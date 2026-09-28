@@ -9,7 +9,8 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/content.css') }}">
   </head>
-  <body data-page="waiting">
+  <body data-page="waiting" data-game-code="{{ game_code }}">
+    <div id="page-state" data-username="{{ username }}" data-admin="{{ 'true' if admin else 'false' }}"></div>
     <div class="waiting-shell">
         <div class="header-card">
             <h1>{{ username }} — Salle d'attente</h1>
