@@ -67,6 +67,126 @@ def test_resolve_redis_host_strips_whitespace(monkeypatch):
     assert app_module.resolve_redis_host() == "redis"
 
 
+def test_delete_game_room_releases_player_usernames():
+    game_code = "ROOM99"
+    username = "alice"
+    r.set(f"game:{game_code}", username, ex=3600)
+    r.set(f"game:{game_code}:status", "waiting", ex=3600)
+    r.lpush(f"game:{game_code}:players", username)
+    r.set(f"user:{username}", username, ex=3600)
+
+    app_module.delete_game_room(game_code)
+
+    assert r.get(f"user:{username}") is None
+    assert not r.exists(f"game:{game_code}:players")
+
+
+def test_deleted_room_shows_room_deleted_message(client):
+    game_code = "ROOM88"
+    username = "alice"
+    client.set_cookie("username", username, domain="localhost")
+    client.set_cookie("game", game_code, domain="localhost")
+
+    resp = client.get("/waiting", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"La salle" in resp.data
+    assert game_code.encode() in resp.data
+    assert b"supprim\xc3\xa9e." in resp.data
+
+
+def test_setusername_rejects_username_already_claimed_by_someone_else(client):
+    r.set("user:Bryan_Drouet2", "Bryan_Drouet2", ex=3600)
+
+    resp = client.post("/setusername", data={"username": "Bryan_Drouet2"}, follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"est d\xc3\xa9j\xc3\xa0 pris." in resp.data
+    assert "username" not in resp.request.cookies
+
+
+def test_pages_are_not_cached_so_cleared_cookies_show_no_pseudo(client):
+    resp = client.get("/")
+
+    assert resp.headers["Cache-Control"] == "no-store, no-cache, must-revalidate"
+    assert b'value="player_' in resp.data
+
+
+def test_new_visitors_get_a_unique_reserved_default_username(client):
+    resp1 = client.get("/")
+    assigned1 = resp1.headers.getlist("Set-Cookie")
+    username1 = next(c.split("=", 1)[1].split(";", 1)[0] for c in assigned1 if c.startswith("username="))
+
+    with app.test_client() as other_client:
+        resp2 = other_client.get("/")
+        assigned2 = resp2.headers.getlist("Set-Cookie")
+        username2 = next(c.split("=", 1)[1].split(";", 1)[0] for c in assigned2 if c.startswith("username="))
+
+    assert username1 != username2
+    assert r.get(f"user:{username1}") == username1
+    assert r.get(f"user:{username2}") == username2
+
+
+def test_joining_game_silently_renews_username_reservation(client):
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/joingame", data={"game_code": "1234"}, follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert b"Veuillez valider votre pseudo" not in resp.data
+    assert r.get("user:alice") == "alice"
+
+
+def test_admin_stays_first_in_players_board_after_others_join(client):
+    r.set("user:admin", "admin", ex=3600)
+    r.set("user:bob", "bob", ex=3600)
+    r.set("user:carol", "carol", ex=3600)
+
+    client.set_cookie("username", "admin", domain="localhost")
+    client.post("/newgame")
+    game_code = next(key.split(":")[1] for key in r.keys("game:*") if key.count(":") == 1 and r.get(key) == "admin")
+
+    client.set_cookie("username", "bob", domain="localhost")
+    client.post("/joingame", data={"game_code": game_code})
+
+    client.set_cookie("username", "carol", domain="localhost")
+    client.post("/joingame", data={"game_code": game_code})
+
+    players = r.lrange(f"game:{game_code}:players", 0, -1)
+    assert players == ["admin", "bob", "carol"]
+
+
+def test_resolve_redis_host_uses_docker_internal_in_container(monkeypatch):
+    monkeypatch.delenv("REDIS_HOST", raising=False)
+    monkeypatch.setattr(app_module.os.path, "exists", lambda path: path == "/.dockerenv")
+    assert app_module.resolve_redis_host() == "host.docker.internal"
+
+
+def test_build_redis_client_falls_back_to_host_docker_internal(monkeypatch):
+    attempts = []
+
+    class DummyRedis:
+        def __init__(self, host, **kwargs):
+            self.host = host
+            attempts.append(host)
+
+        def ping(self):
+            if self.host == "redis":
+                raise redis.exceptions.TimeoutError("Timeout connecting to server")
+            if self.host == "host.docker.internal":
+                return True
+            return True
+
+    monkeypatch.setattr(app_module.redis, "Redis", DummyRedis)
+    monkeypatch.setattr(app_module, "resolve_redis_host", lambda: "redis")
+
+    client = app_module.build_redis_client()
+
+    assert client.host == "host.docker.internal"
+    assert "redis" in attempts
+    assert "host.docker.internal" in attempts
+
+
 def test_same_username_is_allowed_for_current_user(client):
     username = "alice"
     r.set(f"user:{username}", username, ex=3600)
@@ -107,6 +227,7 @@ def test_changing_username_releases_previous_name(client):
 def test_index_hides_stale_resume_and_unknown_game_flash_is_sentence(client):
     client.set_cookie("game", "2380", domain="localhost")
     client.set_cookie("username", "alice", domain="localhost")
+    r.set("user:alice", "alice", ex=3600)
 
     index_resp = client.get("/")
     assert b"Reprendre la partie" not in index_resp.data

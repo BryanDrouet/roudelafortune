@@ -21,27 +21,36 @@
             {% for item in players_data %}
                 <div class="player-token {% if item.is_admin %}admin{% endif %}">
                     <span class="player-number">{{ item.position }}</span>
-                    <div class="player-name">{{ item.name }}</div>
-                    <div class="player-meta">{% if item.is_admin %}Maître{% else %}Joueur{% endif %}</div>
+                    <div class="player-info">
+                        <div class="player-name">{{ item.name }}</div>
+                        <div class="player-meta">{% if item.is_admin %}Maître{% else %}Joueur{% endif %}</div>
+                    </div>
                 </div>
             {% endfor %}
         </div>
 
         <div class="admin-actions">
             {% if admin %}
-                <p>Vous êtes l'administrateur de la partie. Vous pouvez démarrer la partie lorsque tous les joueurs sont prêts.</p>
+                <p>Vous êtes l'administrateur de la partie.</p>
+                <p>En attendant que les joueurs soient prêts vous pouvez modifier les paramètres de la partie.</p>
                 <form action="/waiting" method="post">
-                    <button type="submit" name="switch_status" value="start">Démarrer la partie</button>
+                    <label for="nb_words">Nombre de manches :</label>
+                    <div class="field-group nb-words-field">
+                        <input type="number" name="nb_words" min="1" value="{{ nb_words }}">
+                        <button type="submit">Modifier le nombre de manches</button>
+                    </div>
                 </form>
-                <form action="/waiting" method="post">
-                    Nb de mots : <input type="number" name="nb_words" min="1" value="{{ nb_words }}">
-                    <button type="submit">Modifier le nombre de mots</button>
-                </form>
-                <form action="/leavegame" method="post">
-                    <input type="hidden" name="game_code" value="{{ game_code }}">
-                    <input type="hidden" name="action" value="delete">
-                    <button type="submit">Supprimer la salle</button>
-                </form>
+                <div class="admin-actions-buttons">
+                    </form>
+                        <form action="/waiting" method="post">
+                        <button type="submit" name="switch_status" value="start">Démarrer la partie</button>
+                    </form>
+                    <form action="/leavegame" method="post">
+                        <input type="hidden" name="game_code" value="{{ game_code }}">
+                        <input type="hidden" name="action" value="delete">
+                        <button type="submit" class="danger-btn">Supprimer la salle</button>
+                    </form>
+                </div>
             {% else %}
                 <p>En attente que l'administrateur démarre la partie...</p>
                 <form action="/leavegame" method="post">

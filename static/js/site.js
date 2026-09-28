@@ -10,7 +10,16 @@ document.addEventListener('DOMContentLoaded', () => {
       usernameTitle.textContent = value ? `Mon pseudo : ${value}` : 'Mon pseudo';
     };
 
-    usernameInput.addEventListener('input', syncUsernameTitle);
+    const usernameForm = document.querySelector('form[action="/setusername"]');
+    if (usernameForm) {
+      usernameForm.addEventListener('submit', () => {
+        const value = usernameInput.value.trim();
+        if (value) {
+          syncUsernameTitle();
+        }
+      });
+    }
+
     syncUsernameTitle();
   }
 

@@ -14,22 +14,20 @@
 
       {% with messages = get_flashed_messages() %}
         {% if messages %}
-          <ul>
-            {% for message in messages %}
-              <li>{{ message }}</li>
-            {% endfor %}
-          </ul>
+          {% for message in messages %}
+            <div class="system-message">{{ message }}</div>
+          {% endfor %}
         {% endif %}
       {% endwith %}
 
       <section class="auth-section">
         <h2 id="username-title">Mon pseudo{% if code %} : {{ code }}{% endif %}</h2>
         <form class="form-stack" action="/setusername" method="post">
-          <div class="field-group">
-            <label for="username">Pseudo</label>
-            <input id="username" type="text" name="username" placeholder="Entrez votre pseudo" required minlength="3" maxlength="20" autocomplete="username" value="{{ code or default_username }}">
+          <label for="username">Pseudo</label>
+          <div class="field-group pseudo-field">
+            <input id="username" type="text" name="username" placeholder="Entrez votre pseudo" required minlength="3" maxlength="20" autocomplete="pseudo" value="{{ code or '' }}">
+            <button type="submit">Valider le pseudo</button>
           </div>
-          <button type="submit">Valider le pseudo</button>
         </form>
       </section>
 
@@ -41,11 +39,11 @@
         <section class="auth-section tabs-section">
           <div class="tab-panel active" id="join-tab">
             <form action="/joingame" method="post" class="form-stack">
-              <div class="field-group">
-                <label for="game_code">Code de la partie</label>
+              <label for="game_code">Code de la partie</label>
+              <div class="field-group game-code-field">
                 <input id="game_code" type="text" name="game_code" placeholder="Entrez le code" required>
+                <button type="submit">Rejoindre</button>
               </div>
-              <button type="submit">Rejoindre</button>
             </form>
           </div>
 

@@ -20,16 +20,21 @@ def resolve_redis_host():
     env_host = os.getenv("REDIS_HOST")
     if env_host:
         return env_host.strip()
-    return "redis" if os.path.exists("/.dockerenv") else "localhost"
+    if os.path.exists("/.dockerenv"):
+        return "host.docker.internal"
+    return "localhost"
 
 
 def build_redis_client():
-    host_candidates = []
     configured_host = resolve_redis_host()
+    host_candidates = []
+
     if configured_host:
         host_candidates.append(configured_host)
-    if configured_host != "localhost":
-        host_candidates.append("localhost")
+
+    for fallback in ("redis", "host.docker.internal", "localhost", "127.0.0.1"):
+        if fallback not in host_candidates:
+            host_candidates.append(fallback)
 
     for host in dict.fromkeys(host_candidates):
         client = redis.Redis(
@@ -41,6 +46,7 @@ def build_redis_client():
         )
         try:
             client.ping()
+            print(f"Connected to Redis on {host}")
             return client
         except redis.exceptions.RedisError as exc:
             print(f"Redis unavailable on {host}: {exc}")
@@ -94,6 +100,9 @@ def add_security_headers(response):
         "object-src 'none'; "
         "frame-ancestors 'none';"
     )
+    # Empêche le navigateur de réafficher une page contenant un ancien pseudo après un clear des cookies.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
     return response
 
 
@@ -144,9 +153,29 @@ def get_available_words(exclude=None):
         return "defaultword"  # Fallback word list
 
 
+def release_username(username):
+    if not username:
+        return
+    r.delete(f"user:{username}")
+
+
+def reserve_default_username(max_attempts=5):
+    # Chaque tentative est une réservation atomique pour garantir l'unicité du pseudo par défaut.
+    for _ in range(max_attempts):
+        candidate = f"player_{secure_random.randint(10000, 99999)}"
+        if r.set(f"user:{candidate}", candidate, nx=True, ex=3600):
+            return candidate
+    return None
+
+
 def delete_game_room(game_code):
     if not game_code:
         return
+
+    players = r.lrange(f"game:{game_code}:players", 0, -1)
+    for player in players:
+        release_username(player)
+
     room_keys = [key for key in r.keys(f"game:{game_code}*") if key]
     for key in room_keys:
         r.delete(key)
@@ -157,17 +186,28 @@ def delete_game_room(game_code):
 def index():
     username = request.cookies.get("username")
     game_code = request.cookies.get("game")
-    default_username = f"player_{random.randint(10000, 99999)}"
+    newly_assigned = None
 
     try:
-        if game_code and not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}"):
-            resp = make_response(render_template("index.html", code=username, default_username=default_username, game_code=None))
-            resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
-            return resp
-    except redis.exceptions.RedisError:
-        return render_template("index.html", code=username, default_username=default_username, game_code=None)
+        if not username:
+            newly_assigned = reserve_default_username()
+            username = newly_assigned or username
 
-    return render_template("index.html", code=username, default_username=default_username, game_code=game_code if game_code else None)
+        stale_game = bool(game_code) and not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}")
+    except redis.exceptions.RedisError:
+        return render_template("index.html", code=username, default_username="", game_code=None)
+
+    if stale_game:
+        flash(f"La salle '{game_code}' a été supprimée.")
+        resp = make_response(render_template("index.html", code=username, default_username="", game_code=None))
+        resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
+    else:
+        resp = make_response(render_template("index.html", code=username, default_username="", game_code=game_code if game_code else None))
+
+    if newly_assigned:
+        resp.set_cookie("username", newly_assigned, max_age=3600, secure=request.is_secure, httponly=True)
+
+    return resp
 
 @app.route("/setusername", methods=["GET", "POST"])
 @app.route("/setusername/", methods=["GET", "POST"])
@@ -195,14 +235,18 @@ def set_username():
         if len(username) < 3 or len(username) > 20:
             flash("Le nom d'utilisateur doit contenir entre 3 et 20 caractères.")
             return redirect(url_for("index"))
-        elif username != current_username and r.get(f"user:{username}"):
-            flash(f"Le pseudo '{username}' est déjà pris.")
-            return redirect(url_for("index"))
 
-        if current_username and username != current_username and r.get(f"user:{current_username}") == current_username:
-            r.delete(f"user:{current_username}")
+        if username == current_username:
+            r.set(f"user:{username}", username, ex=3600)
+        else:
+            # Réservation atomique pour éviter que deux clients ne prennent le même pseudo en même temps.
+            claimed = r.set(f"user:{username}", username, nx=True, ex=3600)
+            if not claimed:
+                flash(f"Le pseudo '{username}' est déjà pris.")
+                return redirect(url_for("index"))
 
-        r.set(f"user:{username}", username, ex=3600)
+            if current_username and r.get(f"user:{current_username}") == current_username:
+                r.delete(f"user:{current_username}")
     except redis.exceptions.RedisError as exc:
         print(f"Redis error while updating username: {exc}")
         flash("Le serveur Redis est indisponible. Réessayez plus tard.")
@@ -220,6 +264,9 @@ def newgame():
     if not username:
         return redirect(url_for("index"))
 
+    # Le pseudo est déjà attribué par défaut, on renouvelle juste sa réservation.
+    r.set(f"user:{username}", username, ex=3600)
+
     if request.cookies.get("game"):
         return redirect(url_for("game"))
 
@@ -234,7 +281,7 @@ def newgame():
     r.rpush(f"game:{code}:{word}", *all_letters)
     r.expire(f"game:{code}:{word}", 3600)
     # Créer la liste des joueurs pour cette partie
-    r.lpush(f"game:{code}:players", username)
+    r.rpush(f"game:{code}:players", username)
     r.expire(f"game:{code}:players", 3600)
     # initialiser le statut de la partie
     r.set(f"game:{code}:status", "waiting", ex=3600)
@@ -261,6 +308,9 @@ def joingame(game_code=None):
     if not username:
         return redirect(url_for("index"))
 
+    # Le pseudo est déjà attribué par défaut, on renouvelle juste sa réservation.
+    r.set(f"user:{username}", username, ex=3600)
+
     if not game_code:
         game_code = request.form.get("game_code")
 
@@ -276,7 +326,7 @@ def joingame(game_code=None):
             httponly=True
         )
         if username not in r.lrange(f"game:{game_code}:players", 0, -1):
-            r.lpush(f"game:{game_code}:players", username)
+            r.rpush(f"game:{game_code}:players", username)
         return resp
 
     flash(f"La partie '{game_code}' est inconnue.")
@@ -293,7 +343,7 @@ def waiting():
         return redirect(url_for("index"))
 
     if not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}"):
-        flash(f"La partie '{game_code}' est inconnue.")
+        flash(f"La salle '{game_code}' a été supprimée.")
         resp = redirect(url_for("index"))
         resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
         return resp
@@ -366,6 +416,7 @@ def leave_game():
         players = r.lrange(f"game:{game_code}:players", 0, -1)
         if username in players:
             r.lrem(f"game:{game_code}:players", 0, username)
+        release_username(username)
         flash(f"Vous avez quitté la salle '{game_code}'.")
 
     resp = redirect(url_for("index"))
@@ -383,7 +434,7 @@ def game():
         return redirect(url_for("index"))
 
     if not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}"):
-        flash(f"La partie '{game_code}' est inconnue.")
+        flash(f"La salle '{game_code}' a été supprimée.")
         resp = redirect(url_for("index"))
         resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
         return resp
@@ -395,9 +446,6 @@ def game():
         word = r.get(f"game:{game_code}:word")
         available_letters = r.lrange(f"game:{game_code}:{word}", 0, -1)
 
-        available_voyelles = [v for v in voyelles if v in available_letters]
-        available_consonnes = [c for c in consonnes if c in available_letters]
-
         display_word = "".join([
             char if char not in available_letters else (char if char not in all_letters else "X")
             for char in word
@@ -405,17 +453,12 @@ def game():
 
         playerplay = r.get(f"game:{game_code}:playerplay")
         listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
-        ifplay = False
-        if not playerplay:
+
+        if not playerplay or int(playerplay) >= len(listplayers):
             r.set(f"game:{game_code}:playerplay", 0, ex=3600)
             playerplay = 0
-        elif int(playerplay) >= len(listplayers):
-            r.set(f"game:{game_code}:playerplay", 0, ex=3600)
-            playerplay = 0
-        elif listplayers[int(playerplay)] != username:
-            ifplay = False
-        else:
-            ifplay = True
+
+        ifplay = bool(listplayers) and listplayers[int(playerplay)] == username
 
         player_index = int(playerplay) if playerplay is not None else 0
         current_player_name = listplayers[player_index] if listplayers else username
@@ -434,8 +477,9 @@ def game():
                               game_code=game_code,
                               username=username,
                               word=display_word,
-                              voyelles=available_voyelles,
-                              consonnes=available_consonnes,
+                              voyelles=voyelles,
+                              consonnes=consonnes,
+                              available_letters=available_letters,
                               ifplay=ifplay if 'ifplay' in locals() else False,
                               playerplay=current_player_name,
                               listplayers=listplayers,

@@ -12,24 +12,28 @@
     <div id="game-state" data-last-event="{{ 'true' if last_event else 'false' }}" data-player-turn="{{ 'true' if ifplay else 'false' }}"></div>
     <div class="game-shell">
         <div class="top-bar">
-            <table>
-                <tr>
-                    <td class="status-label">Partie</td>
-                    <td>{{ game_code }}</td>
-                    <td class="status-label">Joueur</td>
-                    <td>{{ username }}</td>
-                    <td class="status-label">Mots restants</td>
-                    <td>{{ nb_words }}</td>
-                </tr>
-            </table>
+            <div class="status-group">
+                <span class="status-label">Partie</span>
+                <span class="status-value">{{ game_code }}</span>
+            </div>
+            <div class="status-group">
+                <span class="status-label">Joueur</span>
+                <span class="status-value">{{ username }}</span>
+            </div>
+            <div class="status-group">
+                <span class="status-label">Mots restants</span>
+                <span class="status-value">{{ nb_words }}</span>
+            </div>
         </div>
 
         <div class="players-board">
             {% for item in players_data %}
                 <div class="player-token {% if item.is_current %}current{% endif %} {% if item.is_me %}me{% endif %}">
                     <span class="player-number">{{ item.position }}</span>
-                    <div class="player-name">{{ item.name }}</div>
-                    <div class="player-score">{{ item.score }} pts</div>
+                    <div class="player-info">
+                        <div class="player-name">{{ item.name }}</div>
+                        <div class="player-score">{{ item.score }} pts</div>
+                    </div>
                 </div>
             {% endfor %}
         </div>
@@ -45,32 +49,35 @@
 
         {% if ifplay %}
             <div class="panel-card">
-                <p>Voyelles | Prise : 2500</p>
+                <div class="letters-section">
+                    <h3 class="letters-title">Voyelles</h3>
+                    <span class="letters-hint">Coûte 2500 points</span>
+                </div>
                 <form action="/guess" method="post">
                     <input type="hidden" name="game_code" value="{{ game_code }}">
                     {% for y in voyelles %}
-                        <button type="submit" name="letter" value="{{ y }}">{{ y }}</button>
+                        <button type="submit" name="letter" value="{{ y }}" class="letter{% if y not in available_letters %} disabled{% endif %}"{% if y not in available_letters %} disabled{% endif %}>{{ y }}</button>
                     {% endfor %}
                 </form>
 
-                <p>Consonnes</p>
+                <div class="letters-section">
+                    <h3 class="letters-title">Consonnes</h3>
+                    <span class="letters-hint">Gratuites</span>
+                </div>
                 <form action="/guess" method="post">
                     <input type="hidden" name="game_code" value="{{ game_code }}">
                     {% for c in consonnes %}
-                        <button type="submit" name="letter" value="{{ c }}">{{ c }}</button>
+                        <button type="submit" name="letter" value="{{ c }}" class="letter{% if c not in available_letters %} disabled{% endif %}"{% if c not in available_letters %} disabled{% endif %}>{{ c }}</button>
                     {% endfor %}
                 </form>
 
                 <div class="controls">
-                    <form action="/guess" method="post">
+                    <form action="/guess" method="post" class="form-stack">
                         <input type="hidden" name="game_code" value="{{ game_code }}">
-                        <input type="text" name="text" placeholder="Entrez votre proposition" onfocus="this.select()">
-                        <input type="submit" value="Proposer" class="secondary-btn">
-                    </form>
-                    <form action="/guess" method="post">
-                        <input type="hidden" name="game_code" value="{{ game_code }}">
-                        <input type="hidden" name="action" value="skip">
-                        <button type="submit" class="secondary-btn">Skip</button>
+                        <div class="field-group guess-field">
+                            <input type="text" name="text" placeholder="Entrez votre proposition" onfocus="this.select()">
+                            <input type="submit" value="Proposer" class="secondary-btn">
+                        </div>
                     </form>
                 </div>
             </div>
@@ -83,37 +90,26 @@
                 {% endfor %}
             {% endif %}
         {% endwith %}
-
-        <div class="panel-card">
-            <table class="table-status">
-                <thead>
-                    <tr>
-                        <th>Joueur actuel</th>
-                        <th>Liste des joueurs</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>{{ playerplay }}</td>
-                        <td>
-                            {% for player in listplayers %}
-                                {{ loop.index }} : {{ player }}{% if not loop.last %} | {% endif %}
-                            {% endfor %}
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-
-        <form action="/leavegame" method="post">
-            <input type="hidden" name="game_code" value="{{ game_code }}">
-            {% if admin %}
-                <input type="hidden" name="action" value="delete">
-                <button type="submit">Supprimer la salle</button>
-            {% else %}
-                <button type="submit">Quitter la salle</button>
+            
+        <div class="game-controls">
+            {% if ifplay %}
+                <form action="/guess" method="post">
+                    <input type="hidden" name="game_code" value="{{ game_code }}">
+                    <input type="hidden" name="action" value="skip">
+                    <button type="submit" class="secondary-btn">Skip</button>
+                </form>
             {% endif %}
-        </form>
+
+            <form action="/leavegame" method="post">
+                <input type="hidden" name="game_code" value="{{ game_code }}">
+                {% if admin %}
+                    <input type="hidden" name="action" value="delete">
+                    <button type="submit">Supprimer la salle</button>
+                {% else %}
+                    <button type="submit">Quitter la salle</button>
+                {% endif %}
+            </form>
+        </div>
     </div>
 
     <script src="{{ url_for('static', filename='js/site.js') }}" defer></script>
