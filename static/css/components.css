@@ -1,10 +1,3 @@
-body {
-    font-family: Arial, sans-serif;
-    margin: 0;
-    background: var(--bg-page);
-    color: var(--text);
-}
-
 button,
 input {
     font: inherit;
@@ -77,12 +70,6 @@ button:hover {
     opacity: 0.45;
 }
 
-section {
-        gap: 12px;
-        display: flex;
-        flex-direction: column;
-}
-
 input[type="text"],
 input[type="number"] {
     padding: 8px 12px;
@@ -106,15 +93,39 @@ form {
     margin: 0;
 }
 
-.player-token.admin {
-    border-color: var(--gold);
-    background: linear-gradient(135deg, var(--gold-soft), var(--gold-soft-2));
+.tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border-soft);
 }
 
-.player-separator {
-    display: inline;
+.tab-button {
+    background: var(--bg-soft);
+    color: var(--text);
+    padding: 8px 14px;
+    font-size: 1rem;
 }
 
-.panel-card {
-    text-align: center;
+.tab-button.active {
+    background: var(--success);
+    color: white;
+}
+
+.tabs button:first-child {
+    border-top-left-radius: var(--radius-md) !important;
+    border-radius: 0;
+    width: 50%;
+}
+
+.tabs button:last-child {
+    border-top-right-radius: var(--radius-md) !important;
+    border-radius: 0;
+    width: 50%;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
 }

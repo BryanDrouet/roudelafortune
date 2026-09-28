@@ -1,4 +1,6 @@
 body {
+    font-family: Arial, sans-serif;
+    margin: 0;
     background: var(--bg-page);
     color: var(--text);
 }
@@ -11,9 +13,7 @@ p {
 }
 
 .page-shell,
-.auth-section,
-.game-shell,
-.waiting-shell {
+.auth-section {
     display: flex;
     flex-direction: column;
     gap: 18px;
@@ -64,12 +64,6 @@ p {
     width: auto;
 }
 
-.game-shell,
-.waiting-shell {
-    max-width: 1200px;
-    padding: 20px;
-}
-
 .admin-message,
 .notice {
     color: var(--text-muted);
@@ -101,4 +95,18 @@ p {
     color: var(--teal);
     font-weight: 600;
     font-size: 0.85rem;
+}
+
+.tabs-section .form-stack {
+    gap: 5px;
+}
+
+.tabs-section {
+    border-top-left-radius: 0 !important;
+    border-top-right-radius: 0 !important;
+}
+
+.page-shell h1 {
+    text-align: center;
+    font-weight: 900;
 }

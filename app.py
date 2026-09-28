@@ -25,6 +25,8 @@ def resolve_redis_host():
     return "localhost"
 
 
+# Essaie l'hôte configuré puis une liste de secours, pour tolérer les environnements
+# Docker où le nom de service "redis" ne se résout pas toujours (ex. sandbox de dev).
 def build_redis_client():
     configured_host = resolve_redis_host()
     host_candidates = []
@@ -285,7 +287,6 @@ def newgame():
     r.expire(f"game:{code}:players", 3600)
     # initialiser le statut de la partie
     r.set(f"game:{code}:status", "waiting", ex=3600)
-    r.set(f"game:{code}:play,", "0", ex=3600)
     r.set(f"game:{code}:money", random.randrange(50, 1000, 50), ex=3600)
     r.set(f"game:{code}:nb_words", 5, ex=3600)
 
@@ -456,6 +457,7 @@ def game():
         playerplay = r.get(f"game:{game_code}:playerplay")
         listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
 
+        # Remet le tour à 0 au premier chargement ou si la liste des joueurs a rétréci depuis.
         if not playerplay or int(playerplay) >= len(listplayers):
             r.set(f"game:{game_code}:playerplay", 0, ex=3600)
             playerplay = 0
@@ -526,6 +528,7 @@ def restart_game():
         flash("Seul l'administrateur peut relancer la partie.")
         return redirect(url_for("index"))
 
+    # On garde le salon et sa liste de joueurs, on efface uniquement l'état de la manche précédente.
     listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
     old_word = r.get(f"game:{game_code}:word")
 
@@ -573,9 +576,6 @@ def guess():
         # Vote de passage ouvert à tout moment, indépendamment du tour de jeu.
         r.sadd(f"game:{game_code}:skip_votes", username)
         active_votes = set(r.smembers(f"game:{game_code}:skip_votes")) & set(listplayers)
-        r.delete(f"game:{game_code}:skip_votes")
-        if active_votes:
-            r.sadd(f"game:{game_code}:skip_votes", *active_votes)
 
         if len(active_votes) >= len(listplayers):
             r.delete(f"game:{game_code}:skip_votes")
@@ -605,6 +605,7 @@ def guess():
         if letter in available_letters:
             
             if letter in voyelles:
+                # Les voyelles se "payent" 2500 points, contrairement aux consonnes qui sont gratuites.
                 if int(r.get(f"game:{game_code}:score:{username}") or 0) < 2500:
                     flash(f"Vous n'avez pas assez d'argent pour prendre une voyelle. Il vous faut 2500, vous avez {int(r.get(f'game:{game_code}:score:{username}') or 0)}.")
                     return redirect(url_for("game"))
@@ -716,6 +717,7 @@ def list_cursors():
         index = int(playerplay) if int(playerplay) < len(listplayers) else 0
         current_player_name = listplayers[index]
 
+    # Une seule salle a un nombre de curseurs limité au nombre de joueurs, KEYS reste donc bon marché ici.
     prefix = f"game:{game_code}:cursor:"
     cursors = []
     for key in r.keys(f"{prefix}*"):

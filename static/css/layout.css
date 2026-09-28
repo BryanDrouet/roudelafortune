@@ -2,6 +2,7 @@
 .waiting-shell {
     max-width: 1200px;
     margin: 0 auto;
+    padding: 20px;
     position: relative;
 }
 
@@ -147,6 +148,10 @@
     border-color: var(--gold);
 }
 
+.player-token.admin {
+    background: linear-gradient(135deg, var(--gold-soft), var(--gold-soft-2));
+}
+
 .player-token.current {
     background: linear-gradient(135deg, var(--gold-soft), var(--gold-soft-2));
     transform: scale(1.06);
@@ -230,6 +235,10 @@
     padding: 18px 20px;
 }
 
+.panel-card {
+    text-align: center;
+}
+
 .controls {
     display: flex;
     flex-wrap: wrap;
@@ -306,55 +315,4 @@
     margin: 0;
     font-weight: 600;
     color: var(--text-muted);
-}
-
-.tabs {
-    display: flex;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.tab-button {
-    background: var(--bg-soft);
-    color: var(--text);
-    padding: 8px 14px;
-    font-size: 1rem;
-}
-
-.tab-button.active {
-    background: var(--success);
-    color: white;
-}
-
-.tabs button:first-child {
-    border-top-left-radius: var(--radius-md) !important;
-    border-radius: 0;
-    width: 50%;
-}
-
-.tabs button:last-child {
-    border-top-right-radius: var(--radius-md) !important;
-    border-radius: 0;
-    width: 50%;
-}
-
-.tab-panel {
-    display: none;
-}
-
-.tab-panel.active {
-    display: block;
-}
-
-.tabs-section .form-stack {
-    gap: 5px;
-}
-
-.tabs-section {
-    border-top-left-radius: 0 !important;
-    border-top-right-radius: 0 !important;
-}
-
-.page-shell h1 {
-    text-align: center;
-    font-weight: 900;
 }
