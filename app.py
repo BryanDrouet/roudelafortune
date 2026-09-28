@@ -5,6 +5,7 @@ import os
 import pandas
 import hashlib
 import json
+import time
 
 
 #env
@@ -15,31 +16,92 @@ print("All letters:", all_letters)
 port=int(os.getenv("PORT") or 8000)
 
 # Connexion à Redis
-r = redis.Redis(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
-    decode_responses=True
-)
+def resolve_redis_host():
+    env_host = os.getenv("REDIS_HOST")
+    if env_host:
+        return env_host.strip()
+    return "redis" if os.path.exists("/.dockerenv") else "localhost"
+
+
+def build_redis_client():
+    host_candidates = []
+    configured_host = resolve_redis_host()
+    if configured_host:
+        host_candidates.append(configured_host)
+    if configured_host != "localhost":
+        host_candidates.append("localhost")
+
+    for host in dict.fromkeys(host_candidates):
+        client = redis.Redis(
+            host=host,
+            port=int(os.getenv("REDIS_PORT", 6379)),
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        try:
+            client.ping()
+            return client
+        except redis.exceptions.RedisError as exc:
+            print(f"Redis unavailable on {host}: {exc}")
+
+    return redis.Redis(
+        host=configured_host,
+        port=int(os.getenv("REDIS_PORT", 6379)),
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
+
+
+r = build_redis_client()
 
 # Fonction pour générer un hash unique de l'état de la partie
 def generate_game_hash(game_code):
+    word = r.get(f"game:{game_code}:word")
     data = {
         "status": r.get(f"game:{game_code}:status"),
-        "word": r.get(f"game:{game_code}:word"),
+        "word": word,
         "playerplay": r.get(f"game:{game_code}:playerplay"),
         "players": r.lrange(f"game:{game_code}:players", 0, -1),
         "money": r.get(f"game:{game_code}:money"),
-        "nb_words": r.get(f"game:{game_code}:nb_words")
+        "nb_words": r.get(f"game:{game_code}:nb_words"),
+        "letters": r.lrange(f"game:{game_code}:{word}", 0, -1) if word else [],
+        "last_event": r.get(f"game:{game_code}:last_event"),
+        "skip_votes": r.lrange(f"game:{game_code}:skip_votes", 0, -1)
     }
-    # Convertir en JSON et hasher en SHA256 (hash court pour éviter les collisions)
-    data_str = json.dumps(data, sort_keys=True)  # sort_keys pour un ordre stable
-    return hashlib.sha256(data_str.encode()).hexdigest()[:8]  # 8 premiers caractères
+    data_str = json.dumps(data, sort_keys=True)
+    return hashlib.sha256(data_str.encode()).hexdigest()[:8]
 
 app = Flask(__name__)
 
 random.seed()
+secure_random = random.SystemRandom()
 key = random.randrange(1111111111, 9999999999, 1)
 app.secret_key = os.getenv("SECRET_KEY", f"secret_key_{key}")
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "form-action 'self'; "
+        "base-uri 'self'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none';"
+    )
+    return response
+
+
+@app.errorhandler(redis.exceptions.RedisError)
+def handle_redis_error(error):
+    print(f"Redis error: {error}")
+    flash("Le serveur Redis est indisponible. Réessayez plus tard.")
+    return redirect(url_for("index"))
 
 #pandas connection test
 try:
@@ -47,25 +109,71 @@ try:
     pd = pd["data"]
 
     print("Pandas connection successful")
+
 except Exception as e:
     print(f"Error connecting to pandas: {e}")
-
-else:
     pd = None
 
-if pd is not None:
-    
-    print(pd.sample(1).values.tolist()[0])
+
+# On prépare un nouveau mot pour le tour suivant et on remet les lettres à zéro.
+def load_new_round_word(game_code, previous_word=None):
+    next_word = get_available_words(exclude=previous_word)
+
+    if previous_word:
+        r.delete(f"game:{game_code}:{previous_word}")
+
+    r.set(f"game:{game_code}:word", next_word, ex=3600)
+    r.delete(f"game:{game_code}:{next_word}")
+    r.rpush(f"game:{game_code}:{next_word}", *all_letters)
+    r.expire(f"game:{game_code}:{next_word}", 3600)
+    return next_word
+
+
+def get_available_words(exclude=None):
+    try:
+        words = pandas.read_csv("data/data.csv")["data"].dropna().astype(str).str.strip()
+        words = list(dict.fromkeys(word for word in words if word))
+        if exclude is not None:
+            words = [word for word in words if word != exclude]
+        if not words:
+            return "defaultword"
+        print(f"Successfully read {len(words)} distinct words from CSV.")
+        return secure_random.choice(words)
+    except Exception as e:
+        print(f"Error reading words from CSV: {e}")
+        return "defaultword"  # Fallback word list
+
+
+def delete_game_room(game_code):
+    if not game_code:
+        return
+    room_keys = [key for key in r.keys(f"game:{game_code}*") if key]
+    for key in room_keys:
+        r.delete(key)
+
 
 ## User logique
 @app.route("/")
 def index():
     username = request.cookies.get("username")
-    return render_template("index.html", code=username, game_code=request.cookies.get("game"))
+    game_code = request.cookies.get("game")
+    default_username = f"player_{random.randint(10000, 99999)}"
+
+    try:
+        if game_code and not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}"):
+            resp = make_response(render_template("index.html", code=username, default_username=default_username, game_code=None))
+            resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
+            return resp
+    except redis.exceptions.RedisError:
+        return render_template("index.html", code=username, default_username=default_username, game_code=None)
+
+    return render_template("index.html", code=username, default_username=default_username, game_code=game_code if game_code else None)
 
 @app.route("/setusername", methods=["GET", "POST"])
 @app.route("/setusername/", methods=["GET", "POST"])
 def set_username():
+    current_username = request.cookies.get("username")
+
     if request.method == "POST":
         username = request.form.get("username")
     else:
@@ -83,14 +191,23 @@ def set_username():
         flash("Le pseudo est obligatoire.")
         return redirect(url_for("index"))
 
-    if len(username) < 3 or len(username) > 20:
-        flash("Le nom d'utilisateur doit contenir entre 3 et 20 caractères.")
-        return redirect(url_for("index"))
-    elif r.get(f"user:{username}"):
-        flash("Le nom d'utilisateur est déjà pris.")
+    try:
+        if len(username) < 3 or len(username) > 20:
+            flash("Le nom d'utilisateur doit contenir entre 3 et 20 caractères.")
+            return redirect(url_for("index"))
+        elif username != current_username and r.get(f"user:{username}"):
+            flash(f"Le pseudo '{username}' est déjà pris.")
+            return redirect(url_for("index"))
+
+        if current_username and username != current_username and r.get(f"user:{current_username}") == current_username:
+            r.delete(f"user:{current_username}")
+
+        r.set(f"user:{username}", username, ex=3600)
+    except redis.exceptions.RedisError as exc:
+        print(f"Redis error while updating username: {exc}")
+        flash("Le serveur Redis est indisponible. Réessayez plus tard.")
         return redirect(url_for("index"))
 
-    r.set(f"user:{username}", username, ex=3600)
     resp = redirect(url_for("index"))
     resp.set_cookie('username', username, max_age=3600, secure=request.is_secure, httponly=True)
     return resp
@@ -100,23 +217,20 @@ def set_username():
 def newgame():
     username = request.cookies.get("username")
 
-    if request.cookies.get("game"):
-        return redirect(url_for("game"))
-
     if not username:
         return redirect(url_for("index"))
 
-    pd = pandas.read_csv("data/data.csv")
-    pd = pd["data"]
+    if request.cookies.get("game"):
+        return redirect(url_for("game"))
 
     code = str(random.randrange(1111, 9999))
-    word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
 
-    # Une partie par code, associée à son utilisateur
+    word = str(get_available_words())  # Récupère un mot aléatoire depuis le CSV
+
+    # Une partie par code, associée à son utilisateur.
     r.set(f"game:{code}", username, ex=3600)
-    # Set le mot de la partie pour cette partie
+    # On enregistre le mot courant et on crée la liste des lettres encore jouables.
     r.set(f"game:{code}:word", word, ex=3600)
-    # Set les lettres pour cette partie
     r.rpush(f"game:{code}:{word}", *all_letters)
     r.expire(f"game:{code}:{word}", 3600)
     # Créer la liste des joueurs pour cette partie
@@ -165,7 +279,7 @@ def joingame(game_code=None):
             r.lpush(f"game:{game_code}:players", username)
         return resp
 
-    flash(f"Partie inconnue : {game_code}")
+    flash(f"La partie '{game_code}' est inconnue.")
     return redirect(url_for("index"))
 
 ## game logique
@@ -173,6 +287,16 @@ def joingame(game_code=None):
 def waiting():
     game_code = request.cookies.get("game")
     username = request.cookies.get("username")
+
+    if not game_code or not username:
+        flash("Partie ou utilisateur introuvable.")
+        return redirect(url_for("index"))
+
+    if not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}"):
+        flash(f"La partie '{game_code}' est inconnue.")
+        resp = redirect(url_for("index"))
+        resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
+        return resp
 
     if r.get(f"game:{game_code}:status") == "playing":
         return redirect(url_for("game"))
@@ -196,29 +320,57 @@ def waiting():
                     r.set(f"game:{game_code}:nb_words", int(nb_words), 3600)
                     return redirect(url_for("game"))
                 else:
-                    flash(f"Impossible de changer le nombre de mots de la partie {game_code}.")
+                    flash(f"Impossible de changer le nombre de mots de la partie {game_code}. Le nombre maximum de manches est de 10.")
                     return redirect(url_for("waiting"))
             else:
                 flash(f"Vous n'êtes pas l'administrateur de la partie {game_code}.")
                 return redirect(url_for("waiting"))
 
-
-
-    if not game_code or not username:
-        flash("Partie ou utilisateur introuvable")
-        return redirect(url_for("index"))
-
     if r.get(f"game:{game_code}:status") == "waiting" and username in r.lrange(f"game:{game_code}:players", 0, -1):
+        players = r.lrange(f"game:{game_code}:players", 0, -1)
+        players_data = [{
+            "name": player,
+            "score": int(r.get(f"game:{game_code}:score:{player}") or 0),
+            "position": idx + 1,
+            "is_admin": (r.get(f"game:{game_code}") == player)
+        } for idx, player in enumerate(players)]
         return render_template("waiting.html",
                                game_code=game_code,
-                               players=r.lrange(f"game:{game_code}:players", 0, -1),
+                               players=players,
+                               players_data=players_data,
                                username=username,
                                admin=(r.get(f"game:{game_code}") == username),
                                nb_words=int(r.get(f"game:{game_code}:nb_words") or 1)
                                )
 
-    flash(f"Partie inconnue : {game_code}")
+    flash(f"La partie '{game_code}' est inconnue.")
     return redirect(url_for("index"))
+
+
+@app.route("/leavegame", methods=["POST"])
+def leave_game():
+    game_code = request.form.get("game_code") or request.cookies.get("game")
+    username = request.cookies.get("username")
+
+    if not username or not game_code:
+        flash("Partie ou utilisateur introuvable.")
+        return redirect(url_for("index"))
+
+    if request.form.get("action") == "delete":
+        if r.get(f"game:{game_code}") != username:
+            flash("Vous n'êtes pas l'administrateur de cette salle.")
+            return redirect(url_for("waiting"))
+        delete_game_room(game_code)
+        flash(f"La salle '{game_code}' a été supprimée.")
+    else:
+        players = r.lrange(f"game:{game_code}:players", 0, -1)
+        if username in players:
+            r.lrem(f"game:{game_code}:players", 0, username)
+        flash(f"Vous avez quitté la salle '{game_code}'.")
+
+    resp = redirect(url_for("index"))
+    resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
+    return resp
 
 
 @app.route("/game")
@@ -226,28 +378,31 @@ def game():
     game_code = request.cookies.get("game")
     username = request.cookies.get("username")
 
+    if not game_code or not username:
+        flash("Partie ou utilisateur introuvable.")
+        return redirect(url_for("index"))
+
+    if not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}"):
+        flash(f"La partie '{game_code}' est inconnue.")
+        resp = redirect(url_for("index"))
+        resp.set_cookie("game", "", expires=0, secure=request.is_secure, httponly=True)
+        return resp
+
     if r.get(f"game:{game_code}:status") == "waiting":
         return redirect(url_for("waiting"))
 
-    if not game_code or not username:
-        flash("Partie ou utilisateur introuvable")
-        return redirect(url_for("index"))
-
     if r.get(f"game:{game_code}:status") == "playing" and username in r.lrange(f"game:{game_code}:players", 0, -1):
-        word = r.get(f"game:{game_code}:word")  # Récupère le mot (string)
-        available_letters = r.lrange(f"game:{game_code}:{word}", 0, -1)  # Lettres disponibles
+        word = r.get(f"game:{game_code}:word")
+        available_letters = r.lrange(f"game:{game_code}:{word}", 0, -1)
 
-        # Filtre les voyelles/consonnes disponibles
         available_voyelles = [v for v in voyelles if v in available_letters]
         available_consonnes = [c for c in consonnes if c in available_letters]
 
-        # Affiche le mot avec les lettres non disponibles masquées
         display_word = "".join([
             char if char not in available_letters else (char if char not in all_letters else "X")
             for char in word
         ])
 
-        ## Récupère "id" du joueur qui joue actuellement et le contrôle pour savoir si c'est le tour du joueur actuel
         playerplay = r.get(f"game:{game_code}:playerplay")
         listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
         ifplay = False
@@ -262,11 +417,18 @@ def game():
         else:
             ifplay = True
 
-        listplayers_dysplay = "".join([
-            str(r.get(f"game:{game_code}:score:{player}") or 0) +
-            f" : {player} | "
-            for player in listplayers
-        ])
+        player_index = int(playerplay) if playerplay is not None else 0
+        current_player_name = listplayers[player_index] if listplayers else username
+        players_data = [{
+            "name": player,
+            "score": int(r.get(f"game:{game_code}:score:{player}") or 0),
+            "position": idx + 1,
+            "is_current": idx == player_index,
+            "is_me": player == username
+        } for idx, player in enumerate(listplayers)]
+
+        last_event_raw = r.get(f"game:{game_code}:last_event")
+        last_event = json.loads(last_event_raw) if last_event_raw else None
 
         return render_template("game.html",
                               game_code=game_code,
@@ -275,10 +437,13 @@ def game():
                               voyelles=available_voyelles,
                               consonnes=available_consonnes,
                               ifplay=ifplay if 'ifplay' in locals() else False,
-                              playerplay=listplayers[int(playerplay)],
-                              listplayers=listplayers_dysplay,
+                              playerplay=current_player_name,
+                              listplayers=listplayers,
+                              players_data=players_data,
+                              admin=(r.get(f"game:{game_code}") == username),
                               money=int(r.get(f'game:{game_code}:money') or 0),
-                              nb_words=int(r.get(f"game:{game_code}:nb_words") or 1)
+                              nb_words=int(r.get(f"game:{game_code}:nb_words") or 1),
+                              last_event=last_event
                               )
 
     if r.get(f"game:{game_code}:status") == "finished":
@@ -286,7 +451,7 @@ def game():
         resp.set_cookie('game', '', expires=0)
         return resp
 
-    flash(f"Partie inconnue : {game_code}")
+    flash(f"La partie '{game_code}' est inconnue.")
     return redirect(url_for("index"))
 
 
@@ -301,7 +466,7 @@ def guess():
     playerplay = r.get(f"game:{game_code}:playerplay")
     listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
     if not playerplay:
-        flash("Partie inconnue")
+        flash("La partie est inconnue ou inactive.")
         return redirect(url_for("game"))
     if listplayers[int(playerplay)] != username:
         flash(f"Ce n'est pas votre tour de jouer, c'est le tour de {listplayers[int(playerplay)]}.")
@@ -343,6 +508,30 @@ def guess():
         else:
             flash(f"La lettre '{letter}' n'est pas disponible pour cette partie.")
             return redirect(url_for("game"))
+    elif request.form.get("action") == "skip":
+        if listplayers[int(playerplay)] != username:
+            flash(f"Ce n'est pas votre tour de jouer, c'est le tour de {listplayers[int(playerplay)]}.")
+            return redirect(url_for("game"))
+
+        # On garde les votes de passage sous forme d'ensemble pour éviter les doublons.
+        skip_votes = set(r.smembers(f"game:{game_code}:skip_votes"))
+        skip_votes.add(username)
+        r.delete(f"game:{game_code}:skip_votes")
+        if skip_votes:
+            r.sadd(f"game:{game_code}:skip_votes", *sorted(skip_votes))
+
+        if len(skip_votes) >= len(listplayers):
+            r.delete(f"game:{game_code}:skip_votes")
+            current_word = r.get(f"game:{game_code}:word")
+            load_new_round_word(game_code, current_word)
+            r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
+            flash("Tous les joueurs ont choisi de passer. Aucun point n'a été attribué et un nouveau mot a été choisi.")
+            return redirect(url_for("game"))
+
+        r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
+        flash(f"{username} a demandé un skip. Il faut que tous les joueurs passent pour valider le tour.")
+        return redirect(url_for("game"))
+
     elif request.form.get("text"):
         text = request.form.get("text")
         if not text:
@@ -350,35 +539,35 @@ def guess():
             return redirect(url_for("game"))
 
         word = r.get(f"game:{game_code}:word")
-        if not word:  # ← NOUVEAU : Vérifie que word existe
+        if not word:
             flash("Mot de la partie introuvable (partie corrompue ou expirée).")
             return redirect(url_for("game"))
         nb_words = r.get(f"game:{game_code}:nb_words") or 1
 
         if text.lower() == word.lower():
+            r.delete(f"game:{game_code}:skip_votes")
+            final_message = f"Félicitations {username}, vous avez deviné le mot '{word}'."
+            r.set(f"game:{game_code}:last_event", json.dumps({
+                "player": username,
+                "word": word,
+                "message": final_message,
+                "time": int(time.time())
+            }), ex=6)
             r.set(f"game:{game_code}:nb_words", int(nb_words) - 1, ex=3600)
             if int(nb_words) - 1 <= 0:
                 r.set(f"game:{game_code}:status", "finished", ex=3600)
-                flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! La partie est terminée.")
+                flash(f"{final_message} La partie est terminée.")
                 return redirect(url_for("game"))
             else:
-                score = word.count(text)  # Récupère le nombre de lettres du mot pour le score
-                flash(f"Félicitations {username}, vous avez deviné le mot '{word}' ! Il reste {int(nb_words) - 1} mots à deviner.")
+                score = len(word)
+                flash(f"{final_message} Il reste {int(nb_words) - 1} mots à deviner.")
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
-                # Choisir un nouveau mot aléatoire
-                pd = pandas.read_csv("data/data.csv")
-                pd = pd["data"]
-                new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
-                while new_word == word:  # Assurez-vous que le nouveau mot est différent de l'ancien
-                    new_word = pd.sample(1).values.tolist()[0] if pd is not None else "defaultword"
-                r.set(f"game:{game_code}:word", new_word, ex=3600)
-                r.delete(f"game:{game_code}:{word}")  # Supprime l'ancienne liste de lettres
-                r.rpush(f"game:{game_code}:{new_word}", *all_letters)  # Crée une nouvelle liste de lettres pour le nouveau mot
-                r.expire(f"game:{game_code}:{new_word}", 3600)
+                load_new_round_word(game_code, word)
+                r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
                 return redirect(url_for("game"))
         else:
             flash(f"Désolé {username}, ce n'est pas le bon mot.")
-            r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
+            r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
             return redirect(url_for("game"))
 
     flash("Aucune action valide n'a été fournie.")

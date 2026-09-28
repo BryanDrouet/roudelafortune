@@ -1,0 +1,77 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 0;
+  background: var(--bg-page);
+  color: var(--text);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  padding: 8px 12px;
+  font-size: 18px;
+  background: var(--success);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  width: stretch;
+}
+
+button:hover {
+  background: var(--success-dark);
+  color: white;
+}
+
+.secondary-btn {
+  background: var(--info);
+}
+
+.secondary-btn:hover {
+  background: var(--info-dark);
+}
+
+section {
+    gap: 12px;
+    display: flex;
+    flex-direction: column;
+}
+
+input[type="text"],
+input[type="number"] {
+  padding: 10px 12px;
+  font-size: 16px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  min-width: 220px;
+}
+
+input[type="submit"] {
+  padding: 10px 18px;
+  font-size: 16px;
+  background: var(--info);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+form {
+  margin: 0;
+}
+
+.player-token.admin {
+  border-color: var(--gold);
+  background: linear-gradient(135deg, var(--gold-soft), var(--gold-soft-2));
+}
+
+.player-separator {
+  display: inline;
+}
+
+.panel-card {
+  text-align: center;
+}
