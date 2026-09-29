@@ -66,15 +66,14 @@ r = build_redis_client()
 
 # Fonction pour générer un hash unique de l'état de la partie
 def generate_game_hash(game_code):
-    word = r.get(f"game:{game_code}:word")
     data = {
         "status": r.get(f"game:{game_code}:status"),
-        "word": word,
+        "word": r.get(f"game:{game_code}:word"),
         "playerplay": r.get(f"game:{game_code}:playerplay"),
         "players": r.lrange(f"game:{game_code}:players", 0, -1),
         "money": r.get(f"game:{game_code}:money"),
         "nb_words": r.get(f"game:{game_code}:nb_words"),
-        "letters": r.lrange(f"game:{game_code}:{word}", 0, -1) if word else [],
+        "letters": r.lrange(f"game:{game_code}:{r.get(f'game:{game_code}:word')}", 0, -1),
         "last_event": r.get(f"game:{game_code}:last_event"),
         "skip_votes": sorted(r.smembers(f"game:{game_code}:skip_votes"))
     }
