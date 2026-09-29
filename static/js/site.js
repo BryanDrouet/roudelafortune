@@ -36,6 +36,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const pageState = document.getElementById('page-state');
     const gameCodeValue = document.body.dataset.gameCode || document.querySelector('input[name="game_code"]')?.value || null;
 
+    if (gameCodeValue && pageState) {
+        const updatePresence = () => fetch('/api/presence', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `game_code=${encodeURIComponent(gameCodeValue)}`
+        }).catch(() => {});
+
+        updatePresence();
+        setInterval(updatePresence, 5000);
+        window.addEventListener('pagehide', () => {
+            navigator.sendBeacon('/api/presence/leave', new URLSearchParams({ game_code: gameCodeValue }));
+        });
+    }
+
     // Curseurs des joueurs en direct, façon Figma/Canva : haute fréquence, pas d'animation de rattrapage.
     function initCursorTracking(containerSelector) {
         const cursorContainer = document.querySelector(containerSelector);
@@ -52,19 +66,15 @@ document.addEventListener('DOMContentLoaded', () => {
         let lastSent = 0;
 
         // Le curseur ne se met à jour que lorsqu'un joueur bouge réellement la souris, pas via un intervalle fixe.
-        cursorContainer.addEventListener('mousemove', (event) => {
+        document.addEventListener('mousemove', (event) => {
             const now = performance.now();
             if (now - lastSent < 70) {
                 return;
             }
             lastSent = now;
 
-            const rect = cursorContainer.getBoundingClientRect();
-            const x = ((event.clientX - rect.left) / rect.width) * 100;
-            const y = ((event.clientY - rect.top) / rect.height) * 100;
-            if (x < 0 || x > 100 || y < 0 || y > 100) {
-                return;
-            }
+            const x = Math.max(0, Math.min(100, (event.clientX / window.innerWidth) * 100));
+            const y = Math.max(0, Math.min(100, (event.clientY / window.innerHeight) * 100));
 
             fetch('/api/cursor', {
                 method: 'POST',
@@ -72,7 +82,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: `game_code=${encodeURIComponent(gameCodeValue)}&x=${x.toFixed(2)}&y=${y.toFixed(2)}`
             }).catch(() => {});
 
-            fetchCursors().then(syncCursors);
         });
 
         async function fetchCursors() {
@@ -107,8 +116,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderedCursors.set(cursor.username, el);
                 }
 
-                el.style.left = `${cursor.x}%`;
-                el.style.top = `${cursor.y}%`;
+                const x = Math.min(Number(cursor.x) || 0, ((window.innerWidth - 20) / window.innerWidth) * 100);
+                const y = Math.min(Number(cursor.y) || 0, ((window.innerHeight - 20) / window.innerHeight) * 100);
+                el.style.left = `${x}%`;
+                el.style.top = `${y}%`;
+                el.classList.toggle('label-left', x > 75);
+                el.classList.toggle('label-above', y > 80);
                 el.classList.toggle('is-admin', !!cursor.is_admin);
                 el.classList.toggle('is-current', !!cursor.is_current);
                 el.querySelector('.remote-cursor-label').textContent = cursor.username;
@@ -121,6 +134,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         }
+
+        const refreshCursors = async () => syncCursors(await fetchCursors());
+        refreshCursors();
+        setInterval(refreshCursors, 250);
     }
 
     if (pageContext === 'waiting') {
@@ -163,6 +180,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (pageContext === 'finished') {
         initCursorTracking('.finished-shell');
+
+        let currentHash = null;
+        const fetchGameHash = async () => {
+            try {
+                const response = await fetch('/api/update/hash', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `game_code=${encodeURIComponent(gameCodeValue)}`
+                });
+                const data = await response.json();
+                return data.hash;
+            } catch (error) {
+                return null;
+            }
+        };
+        const checkForChanges = async () => {
+            const newHash = await fetchGameHash();
+            if (newHash && currentHash && newHash !== currentHash) {
+                window.location.reload();
+            }
+            currentHash = newHash || currentHash;
+        };
+        fetchGameHash().then((hash) => {
+            currentHash = hash;
+            setInterval(checkForChanges, 1000);
+        });
     }
 
     if (pageContext === 'game' && pageState) {

@@ -315,6 +315,27 @@ def test_winner_of_the_word_plays_first_on_the_next_round(client, monkeypatch):
     assert resp.status_code == 302
     assert r.get(f"game:{game_code}:word") == new_word
     assert r.get(f"game:{game_code}:playerplay") == "1"
+    assert r.get(f"game:{game_code}:score:B") == "400"
+
+
+def test_winner_gets_points_for_the_final_word(client):
+    game_code = "FINAL01"
+    word = "casa"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.set(f"game:{game_code}:money", 200, ex=3600)
+    r.set(f"game:{game_code}:nb_words", 1, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+
+    client.set_cookie("username", "alice", domain="localhost")
+    resp = client.post("/guess", data={"game_code": game_code, "text": word})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:status") == "finished"
+    assert r.get(f"game:{game_code}:score:alice") == "800"
+    assert r.get(f"game:{game_code}:nb_words") == "0"
 
 
 def test_any_player_can_vote_skip_regardless_of_turn(client):
@@ -385,6 +406,9 @@ def test_restart_game_resets_state_and_returns_to_waiting(client):
     r.set(f"game:{game_code}:status", "finished", ex=3600)
     r.set(f"game:{game_code}:word", old_word, ex=3600)
     r.rpush(f"game:{game_code}:players", "admin", "bob")
+    r.set(app_module.player_presence_key(game_code, "admin"), "1", ex=15)
+    r.set(app_module.player_presence_key(game_code, "bob"), "1", ex=15)
+    r.set(f"game:{game_code}:rounds_config", 5, ex=3600)
     r.rpush(f"game:{game_code}:{old_word}", *all_letters)
     r.set(f"game:{game_code}:score:admin", 500, ex=3600)
     r.set(f"game:{game_code}:score:bob", 900, ex=3600)
@@ -398,7 +422,59 @@ def test_restart_game_resets_state_and_returns_to_waiting(client):
     assert r.get(f"game:{game_code}:score:admin") is None
     assert r.get(f"game:{game_code}:score:bob") is None
     assert r.get(f"game:{game_code}:playerplay") is None
+    assert r.get(f"game:{game_code}:nb_words") == "5"
     assert r.lrange(f"game:{game_code}:players", 0, -1) == ["admin", "bob"]
+
+
+def test_restart_game_removes_inactive_players_and_restores_configured_rounds(client, monkeypatch):
+    game_code = "END04"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", "casa", ex=3600)
+    r.set(f"game:{game_code}:nb_words", 0, ex=3600)
+    r.set(f"game:{game_code}:rounds_config", 3, ex=3600)
+    r.rpush(f"game:{game_code}:players", "admin", "bob", "carol")
+    r.set(app_module.player_presence_key(game_code, "bob"), "1", ex=15)
+    monkeypatch.setattr(app_module, "get_available_words", lambda exclude=None: "moto")
+
+    client.set_cookie("username", "admin", domain="localhost")
+    resp = client.post("/restartgame", data={"game_code": game_code})
+
+    assert resp.status_code == 302
+    assert r.lrange(f"game:{game_code}:players", 0, -1) == ["admin", "bob"]
+    assert r.get(f"game:{game_code}:nb_words") == "3"
+    assert r.get(f"game:{game_code}:word") == "moto"
+
+
+def test_home_resumes_existing_waiting_game_after_refresh(client):
+    game_code = "RESUME1"
+    r.set(f"game:{game_code}", "alice", ex=3600)
+    r.set(f"game:{game_code}:status", "waiting", ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    client.set_cookie("username", "alice", domain="localhost")
+    client.set_cookie("game", game_code, domain="localhost")
+
+    resp = client.get("/")
+
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/waiting")
+
+
+def test_finished_page_keeps_game_cookie_for_refresh(client):
+    game_code = "RESUME2"
+    r.set(f"game:{game_code}", "alice", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", "casa", ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    client.set_cookie("username", "alice", domain="localhost")
+    client.set_cookie("game", game_code, domain="localhost")
+
+    first = client.get("/game")
+    second = client.get("/game")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert b"Partie RESUME2 termin\xc3\xa9e" in second.data
 
 
 def test_restart_game_rejects_non_admin(client):

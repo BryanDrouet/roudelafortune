@@ -12,6 +12,8 @@ import time
 voyelles = ["a", "e", "i", "o", "u", "y"]
 consonnes = ["b", "c", "d", "f", "g", "h", "j", "k", "l", "m", "n", "p", "q", "r", "s", "t", "v", "w", "x", "z"]
 all_letters = voyelles + consonnes
+DEFAULT_ROUNDS = 5
+PLAYER_PRESENCE_TTL = 15
 print("All letters:", all_letters)
 port=int(os.getenv("PORT") or 8000)
 
@@ -169,6 +171,10 @@ def reserve_default_username(max_attempts=5):
     return None
 
 
+def player_presence_key(game_code, username):
+    return f"game:{game_code}:presence:{username}"
+
+
 def delete_game_room(game_code):
     if not game_code:
         return
@@ -195,8 +201,18 @@ def index():
             username = newly_assigned or username
 
         stale_game = bool(game_code) and not r.exists(f"game:{game_code}:status") and not r.exists(f"game:{game_code}")
+        game_status = r.get(f"game:{game_code}:status") if game_code and not stale_game else None
+        game_players = r.lrange(f"game:{game_code}:players", 0, -1) if game_status else []
     except redis.exceptions.RedisError:
         return render_template("index.html", code=username, default_username="", game_code=None)
+
+    if game_status in ("waiting", "playing") and username:
+        if username not in game_players:
+            r.rpush(f"game:{game_code}:players", username)
+            r.set(f"user:{username}", username, ex=3600)
+        return redirect(url_for("waiting" if game_status == "waiting" else "game"))
+    if game_status == "finished" and username in game_players:
+        return redirect(url_for("game"))
 
     if stale_game:
         flash(f"La salle '{game_code}' a été supprimée.")
@@ -287,7 +303,8 @@ def newgame():
     # initialiser le statut de la partie
     r.set(f"game:{code}:status", "waiting", ex=3600)
     r.set(f"game:{code}:money", random.randrange(50, 1000, 50), ex=3600)
-    r.set(f"game:{code}:nb_words", 5, ex=3600)
+    r.set(f"game:{code}:nb_words", DEFAULT_ROUNDS, ex=3600)
+    r.set(f"game:{code}:rounds_config", DEFAULT_ROUNDS, ex=3600)
 
     # Rediriger vers la page de jeu avec le code de la partie dans les cookies
 
@@ -352,6 +369,10 @@ def waiting():
     if r.get(f"game:{game_code}:status") == "playing":
         return redirect(url_for("game"))
 
+    if r.get(f"game:{game_code}:status") == "waiting" and username not in r.lrange(f"game:{game_code}:players", 0, -1):
+        r.rpush(f"game:{game_code}:players", username)
+        r.set(f"user:{username}", username, ex=3600)
+
     if request.form.get("switch_status"):
         if r.get(f"game:{game_code}") == username:
             if r.get(f"game:{game_code}:status") == "waiting":
@@ -369,6 +390,7 @@ def waiting():
                 nb_words = request.form.get("nb_words")
                 if nb_words and nb_words.isdigit() and 1 <= int(nb_words) <= 10:
                     r.set(f"game:{game_code}:nb_words", int(nb_words), 3600)
+                    r.set(f"game:{game_code}:rounds_config", int(nb_words), ex=3600)
                     return redirect(url_for("game"))
                 else:
                     flash(f"Impossible de changer le nombre de mots de la partie {game_code}. Le nombre maximum de manches est de 10.")
@@ -444,6 +466,10 @@ def game():
     if r.get(f"game:{game_code}:status") == "waiting":
         return redirect(url_for("waiting"))
 
+    if r.get(f"game:{game_code}:status") == "playing" and username not in r.lrange(f"game:{game_code}:players", 0, -1):
+        r.rpush(f"game:{game_code}:players", username)
+        r.set(f"user:{username}", username, ex=3600)
+
     if r.get(f"game:{game_code}:status") == "playing" and username in r.lrange(f"game:{game_code}:players", 0, -1):
         word = r.get(f"game:{game_code}:word")
         available_letters = r.lrange(f"game:{game_code}:{word}", 0, -1)
@@ -506,9 +532,7 @@ def game():
         for index, entry in enumerate(scoreboard):
             entry["is_winner"] = index == 0
 
-        resp = make_response(render_template("finished.html", game_code=game_code, word=r.get(f"game:{game_code}:word"), listplayers=scoreboard, username=username, admin=(r.get(f"game:{game_code}") == username)))
-        resp.set_cookie('game', '', expires=0)
-        return resp
+        return render_template("finished.html", game_code=game_code, word=r.get(f"game:{game_code}:word"), listplayers=scoreboard, username=username, admin=(r.get(f"game:{game_code}") == username))
 
     flash(f"La partie '{game_code}' est inconnue.")
     return redirect(url_for("index"))
@@ -527,22 +551,32 @@ def restart_game():
         flash("Seul l'administrateur peut relancer la partie.")
         return redirect(url_for("index"))
 
-    # On garde le salon et sa liste de joueurs, on efface uniquement l'état de la manche précédente.
+    # Seuls les joueurs dont une page est encore active sont conservés au redémarrage.
     listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
+    active_players = [
+        player for player in listplayers
+        if player == username or r.exists(player_presence_key(game_code, player))
+    ]
+    departed_players = set(listplayers) - set(active_players)
+    r.delete(f"game:{game_code}:players")
+    if active_players:
+        r.rpush(f"game:{game_code}:players", *active_players)
+    for player in departed_players:
+        r.delete(f"game:{game_code}:score:{player}", f"game:{game_code}:cursor:{player}")
+
     old_word = r.get(f"game:{game_code}:word")
 
-    for player in listplayers:
+    for player in active_players:
         r.delete(f"game:{game_code}:score:{player}")
 
-    if old_word:
-        r.delete(f"game:{game_code}:{old_word}")
-
-    r.delete(f"game:{game_code}:word")
     r.delete(f"game:{game_code}:playerplay")
     r.delete(f"game:{game_code}:last_event")
     r.delete(f"game:{game_code}:skip_votes")
     r.set(f"game:{game_code}:status", "waiting", ex=3600)
     r.set(f"game:{game_code}:money", random.randrange(50, 1000, 50), ex=3600)
+    configured_rounds = int(r.get(f"game:{game_code}:rounds_config") or DEFAULT_ROUNDS)
+    r.set(f"game:{game_code}:nb_words", configured_rounds, ex=3600)
+    load_new_round_word(game_code, old_word)
     r.expire(f"game:{game_code}", 3600)
     r.expire(f"game:{game_code}:players", 3600)
 
@@ -650,15 +684,15 @@ def guess():
                 "message": final_message,
                 "time": int(time.time())
             }), ex=6)
+            score = len(word) * int(r.get(f"game:{game_code}:money") or 100)
+            r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score, ex=3600)
             r.set(f"game:{game_code}:nb_words", int(nb_words) - 1, ex=3600)
             if int(nb_words) - 1 <= 0:
                 r.set(f"game:{game_code}:status", "finished", ex=3600)
                 flash(f"{final_message} La partie est terminée.")
                 return redirect(url_for("game"))
             else:
-                score = len(word)
                 flash(f"{final_message} Il reste {int(nb_words) - 1} mots à deviner.")
-                r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
                 load_new_round_word(game_code, word)
                 # Le gagnant du mot rejoue en premier sur le mot suivant.
                 r.set(f"game:{game_code}:playerplay", listplayers.index(username), ex=3600)
@@ -696,8 +730,31 @@ def update_cursor():
     except ValueError:
         return {"error": "x et y doivent être numériques"}, 400
 
-    # Expiration courte : le curseur disparaît vite si l'onglet est fermé ou inactif.
-    r.set(f"game:{game_code}:cursor:{username}", json.dumps({"x": x, "y": y}), ex=5)
+    r.set(f"game:{game_code}:cursor:{username}", json.dumps({"x": x, "y": y}), ex=PLAYER_PRESENCE_TTL)
+    return {"ok": True}, 200
+
+
+@app.route('/api/presence', methods=['POST'])
+def update_presence():
+    game_code = request.form.get("game_code")
+    username = request.cookies.get("username")
+    if not game_code or not username:
+        return {"error": "game_code et username sont requis"}, 400
+    if username not in r.lrange(f"game:{game_code}:players", 0, -1):
+        return {"error": "joueur absent de la partie"}, 403
+
+    r.set(player_presence_key(game_code, username), "1", ex=PLAYER_PRESENCE_TTL)
+    r.expire(f"game:{game_code}:cursor:{username}", PLAYER_PRESENCE_TTL)
+    return {"ok": True}, 200
+
+
+@app.route('/api/presence/leave', methods=['POST'])
+def clear_presence():
+    game_code = request.form.get("game_code")
+    username = request.cookies.get("username")
+    if not game_code or not username:
+        return {"error": "game_code et username sont requis"}, 400
+    r.delete(player_presence_key(game_code, username), f"game:{game_code}:cursor:{username}")
     return {"ok": True}, 200
 
 
@@ -738,8 +795,7 @@ def list_cursors():
 
     return {"cursors": cursors}, 200
 
-## API route to update game data, can be used for a signal page or other purposes
-## if update sinal page api 
+## API route pour récupérer l'état de la partie ou son hash (utilisée par la page d'attente pour détecter les changements)
 @app.route('/api/update/<type>', methods=['POST'])
 def api_update(type):
     game_code = request.form.get("game_code")

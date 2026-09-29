@@ -28,7 +28,7 @@
 }
 
 .cursor-layer {
-	position: absolute;
+    position: fixed;
 	inset: 0;
 	pointer-events: none;
 	overflow: hidden;
@@ -58,7 +58,20 @@
 	font-weight: 600;
 	padding: 2px 6px;
 	border-radius: 6px;
-	white-space: nowrap;
+    white-space: nowrap;
+    max-width: min(220px, calc(100vw - 40px));
+    overflow-wrap: anywhere;
+}
+
+.remote-cursor.label-left .remote-cursor-label {
+    left: auto;
+    right: 16px;
+    text-align: right;
+}
+
+.remote-cursor.label-above .remote-cursor-label {
+    top: auto;
+    bottom: 14px;
 }
 
 .remote-cursor.is-current .remote-cursor-pointer {
@@ -155,7 +168,6 @@
 .player-token.current {
     background: linear-gradient(135deg, var(--gold-soft), var(--gold-soft-2));
     transform: scale(1.06);
-    box-shadow: 0 12px 28px rgba(255,183,3,0.33);
 }
 
 .player-token.winner {
