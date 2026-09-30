@@ -146,7 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const refreshCursors = async () => syncCursors(await fetchCursors());
         refreshCursors();
-        setInterval(refreshCursors, 250);
+        setInterval(refreshCursors, 1000);
     }
 
     if (pageContext === 'waiting') {

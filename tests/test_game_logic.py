@@ -190,6 +190,20 @@ def test_setusername_rejects_username_already_claimed_by_someone_else(client):
     assert "username" not in resp.request.cookies
 
 
+def test_forged_username_cookie_cannot_renew_someone_elses_reservation(client):
+    r.set("user:alice", "alice", ex=3600)
+    app.config["TESTING"] = False
+    try:
+        client.set_cookie("username", "alice", domain="localhost")
+        resp = client.post("/setusername", data={"username": "alice"})
+    finally:
+        app.config["TESTING"] = True
+
+    assert resp.status_code == 302
+    assert r.ttl("user:alice") <= 3600
+    assert b"d\xc3\xa9j\xc3\xa0 pris" in client.get("/", follow_redirects=True).data
+
+
 def test_pages_are_not_cached_so_cleared_cookies_show_no_pseudo(client):
     resp = client.get("/")
 
@@ -551,6 +565,20 @@ def test_home_resumes_existing_waiting_game_after_refresh(client):
 
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith("/waiting")
+
+
+def test_room_cookie_alone_cannot_rejoin_a_waiting_game(client):
+    game_code = "COOKIE1"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "waiting", ex=3600)
+    r.rpush(f"game:{game_code}:players", "admin")
+    client.set_cookie("game", game_code, domain="localhost")
+    client.set_cookie("username", "intruder", domain="localhost")
+
+    resp = client.get("/waiting")
+
+    assert resp.status_code == 302
+    assert r.lrange(f"game:{game_code}:players", 0, -1) == ["admin"]
 
 
 def test_finished_page_keeps_game_cookie_for_refresh(client):

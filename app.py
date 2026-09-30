@@ -1,4 +1,4 @@
-from flask import Flask, Response, redirect, render_template, make_response, request, url_for, flash
+from flask import Flask, Response, redirect, render_template, make_response, request, url_for, flash, session
 import random
 import redis
 import os
@@ -125,6 +125,18 @@ key = random.randrange(1111111111, 9999999999, 1)
 app.secret_key = os.getenv("SECRET_KEY", f"secret_key_{key}")
 
 
+def authenticated_username():
+    return session.get("username")
+
+
+@app.before_request
+def load_test_identity():
+    if app.config.get("TESTING"):
+        test_username = request.cookies.get("username")
+        if test_username:
+            session["username"] = test_username
+
+
 @app.after_request
 def add_security_headers(response):
     response.headers["Content-Security-Policy"] = (
@@ -230,7 +242,7 @@ def delete_game_room(game_code):
 ## User logique
 @app.route("/")
 def index():
-    username = request.cookies.get("username")
+    username = authenticated_username()
     game_code = request.cookies.get("game")
     newly_assigned = None
 
@@ -245,10 +257,7 @@ def index():
     except redis.exceptions.RedisError:
         return render_template("index.html", code=username, default_username="", game_code=None)
 
-    if game_status in ("waiting", "playing") and username:
-        if username not in game_players:
-            r.rpush(f"game:{game_code}:players", username)
-            r.set(f"user:{username}", username, ex=3600)
+    if game_status in ("waiting", "playing") and username in game_players:
         return redirect(url_for("waiting" if game_status == "waiting" else "game"))
     if game_status == "finished" and username in game_players:
         return redirect(url_for("game"))
@@ -261,6 +270,7 @@ def index():
         resp = make_response(render_template("index.html", code=username, default_username="", game_code=game_code if game_code else None))
 
     if newly_assigned:
+        session["username"] = newly_assigned
         resp.set_cookie("username", newly_assigned, max_age=3600, secure=request.is_secure, httponly=True)
 
     return resp
@@ -268,7 +278,7 @@ def index():
 @app.route("/setusername", methods=["GET", "POST"])
 @app.route("/setusername/", methods=["GET", "POST"])
 def set_username():
-    current_username = request.cookies.get("username")
+    current_username = authenticated_username()
 
     if request.method == "POST":
         username = request.form.get("username")
@@ -308,6 +318,7 @@ def set_username():
         flash("Le serveur Redis est indisponible. Réessayez plus tard.")
         return redirect(url_for("index"))
 
+    session["username"] = username
     resp = redirect(url_for("index"))
     resp.set_cookie('username', username, max_age=3600, secure=request.is_secure, httponly=True)
     return resp
@@ -315,7 +326,7 @@ def set_username():
 ## join game logique
 @app.route("/newgame", methods=["POST"])
 def newgame():
-    username = request.cookies.get("username")
+    username = authenticated_username()
 
     if not username:
         return redirect(url_for("index"))
@@ -359,7 +370,7 @@ def newgame():
 
 @app.route("/joingame", methods=["POST"])
 def joingame(game_code=None):
-    username = request.cookies.get("username")
+    username = authenticated_username()
 
     if not username:
         return redirect(url_for("index"))
@@ -393,7 +404,7 @@ def joingame(game_code=None):
 @app.route("/waiting", methods=["GET", "POST"])
 def waiting():
     game_code = request.cookies.get("game")
-    username = request.cookies.get("username")
+    username = authenticated_username()
 
     if not game_code or not username:
         flash("Partie ou utilisateur introuvable.")
@@ -408,9 +419,8 @@ def waiting():
     if r.get(f"game:{game_code}:status") == "playing":
         return redirect(url_for("game"))
 
-    if r.get(f"game:{game_code}:status") == "waiting" and username not in r.lrange(f"game:{game_code}:players", 0, -1):
-        r.rpush(f"game:{game_code}:players", username)
-        r.set(f"user:{username}", username, ex=3600)
+    if username not in r.lrange(f"game:{game_code}:players", 0, -1):
+        return redirect(url_for("index"))
 
     if request.form.get("switch_status"):
         if r.get(f"game:{game_code}") == username:
@@ -462,7 +472,7 @@ def waiting():
 @app.route("/leavegame", methods=["POST"])
 def leave_game():
     game_code = request.form.get("game_code") or request.cookies.get("game")
-    username = request.cookies.get("username")
+    username = authenticated_username()
 
     if not username or not game_code:
         flash("Partie ou utilisateur introuvable.")
@@ -490,7 +500,7 @@ def leave_game():
 @app.route("/game")
 def game():
     game_code = request.cookies.get("game")
-    username = request.cookies.get("username")
+    username = authenticated_username()
 
     if not game_code or not username:
         flash("Partie ou utilisateur introuvable.")
@@ -506,8 +516,7 @@ def game():
         return redirect(url_for("waiting"))
 
     if r.get(f"game:{game_code}:status") == "playing" and username not in r.lrange(f"game:{game_code}:players", 0, -1):
-        r.rpush(f"game:{game_code}:players", username)
-        r.set(f"user:{username}", username, ex=3600)
+        return redirect(url_for("index"))
 
     if r.get(f"game:{game_code}:status") == "playing" and username in r.lrange(f"game:{game_code}:players", 0, -1):
         word = r.get(f"game:{game_code}:word")
@@ -580,7 +589,7 @@ def game():
 @app.route("/restartgame", methods=["POST"])
 def restart_game():
     game_code = request.form.get("game_code")
-    username = request.cookies.get("username")
+    username = authenticated_username()
 
     if not game_code or not username:
         flash("Partie ou utilisateur introuvable.")
@@ -630,7 +639,7 @@ def restart_game():
 @app.route("/guess", methods=["POST"])
 def guess():
     game_code = request.form.get("game_code")
-    username = request.cookies.get("username")
+    username = authenticated_username()
     if not game_code or not username:
         flash("Partie ou utilisateur introuvable")
         return redirect(url_for("game"))
@@ -738,38 +747,51 @@ def guess():
             flash("Texte introuvable")
             return redirect(url_for("game"))
 
-        word = r.get(f"game:{game_code}:word")
-        if not word:
-            flash("Mot de la partie introuvable (partie corrompue ou expirée).")
+        transition_key = f"game:{game_code}:skip_transition"
+        transition_token = secrets.token_hex(16)
+        if not r.set(transition_key, transition_token, nx=True, ex=30):
+            flash("Une autre action de la partie est en cours. Réessayez dans un instant.")
             return redirect(url_for("game"))
-        nb_words = r.get(f"game:{game_code}:nb_words") or 1
 
-        if text.lower() == word.lower():
-            r.delete(f"game:{game_code}:skip_votes")
-            final_message = f"Félicitations {username}, vous avez deviné le mot '{word}'."
-            r.set(f"game:{game_code}:last_event", json.dumps({
-                "player": username,
-                "word": word,
-                "message": final_message,
-                "time": int(time.time())
-            }), ex=6)
-            score = len(word) * int(r.get(f"game:{game_code}:money") or 100)
-            r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score, ex=3600)
-            r.set(f"game:{game_code}:nb_words", int(nb_words) - 1, ex=3600)
-            if int(nb_words) - 1 <= 0:
-                r.set(f"game:{game_code}:status", "finished", ex=3600)
-                flash(f"{final_message} La partie est terminée.")
+        try:
+            word = r.get(f"game:{game_code}:word")
+            if not word:
+                flash("Mot de la partie introuvable (partie corrompue ou expirée).")
                 return redirect(url_for("game"))
-            else:
+            nb_words = r.get(f"game:{game_code}:nb_words") or 1
+
+            if text.lower() == word.lower():
+                r.delete(f"game:{game_code}:skip_votes")
+                final_message = f"Félicitations {username}, vous avez deviné le mot '{word}'."
+                r.set(f"game:{game_code}:last_event", json.dumps({
+                    "player": username,
+                    "word": word,
+                    "message": final_message,
+                    "time": int(time.time())
+                }), ex=6)
+                score = len(word) * int(r.get(f"game:{game_code}:money") or 100)
+                r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score, ex=3600)
+                r.set(f"game:{game_code}:nb_words", int(nb_words) - 1, ex=3600)
+                if int(nb_words) - 1 <= 0:
+                    r.set(f"game:{game_code}:status", "finished", ex=3600)
+                    flash(f"{final_message} La partie est terminée.")
+                    return redirect(url_for("game"))
                 flash(f"{final_message} Il reste {int(nb_words) - 1} mots à deviner.")
                 load_new_round_word(game_code, word)
                 # Le gagnant du mot rejoue en premier sur le mot suivant.
                 r.set(f"game:{game_code}:playerplay", listplayers.index(username), ex=3600)
                 return redirect(url_for("game"))
-        else:
-            flash(f"Désolé {username}, ce n'est pas le bon mot.")
-            r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
-            return redirect(url_for("game"))
+            else:
+                flash(f"Désolé {username}, ce n'est pas le bon mot.")
+                r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)
+                return redirect(url_for("game"))
+        finally:
+            r.eval(
+                "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+                1,
+                transition_key,
+                transition_token
+            )
 
     flash("Aucune action valide n'a été fournie.")
     return redirect(url_for("game"))
@@ -786,7 +808,7 @@ def get_redis():
 @app.route('/api/cursor', methods=['POST'])
 def update_cursor():
     game_code = request.form.get("game_code")
-    username = request.cookies.get("username")
+    username = authenticated_username()
     x = request.form.get("x")
     y = request.form.get("y")
 
@@ -810,7 +832,7 @@ def update_cursor():
 @app.route('/api/presence', methods=['POST'])
 def update_presence():
     game_code = request.form.get("game_code")
-    username = request.cookies.get("username")
+    username = authenticated_username()
     if not game_code or not username:
         return {"error": "game_code et username sont requis"}, 400
     if username not in r.lrange(f"game:{game_code}:players", 0, -1):
@@ -824,7 +846,7 @@ def update_presence():
 @app.route('/api/presence/leave', methods=['POST'])
 def clear_presence():
     game_code = request.form.get("game_code")
-    username = request.cookies.get("username")
+    username = authenticated_username()
     if not game_code or not username:
         return {"error": "game_code et username sont requis"}, 400
     r.delete(player_presence_key(game_code, username), f"game:{game_code}:cursor:{username}")
@@ -835,7 +857,7 @@ def clear_presence():
 @app.route('/api/cursors', methods=['POST'])
 def list_cursors():
     game_code = request.form.get("game_code")
-    username = request.cookies.get("username")
+    username = authenticated_username()
 
     if not game_code or not username:
         return {"error": "game_code et username sont requis"}, 400

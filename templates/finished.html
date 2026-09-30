@@ -35,7 +35,8 @@
                     <button type="submit">Relancer la partie</button>
                 </form>
             {% endif %}
-            <form action="/" method="get">
+            <form action="/leavegame" method="post">
+                <input type="hidden" name="game_code" value="{{ game_code }}">
                 <button type="submit" class="secondary-btn">Retour à l'accueil</button>
             </form>
         </div>
