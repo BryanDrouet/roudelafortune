@@ -571,6 +571,10 @@ def game():
                               has_voted_skip=username in skip_votes
                               )
 
+    if r.get(f"game:{game_code}:status") == "finished" and username not in r.lrange(f"game:{game_code}:players", 0, -1):
+        flash("Vous ne faites pas partie de cette partie.")
+        return redirect(url_for("index"))
+
     if r.get(f"game:{game_code}:status") == "finished":
         scoreboard = sorted(
             [{"name": player, "score": int(r.get(f"game:{game_code}:score:{player}") or 0)} for player in r.lrange(f"game:{game_code}:players", 0, -1)],
@@ -598,6 +602,10 @@ def restart_game():
     if r.get(f"game:{game_code}") != username:
         flash("Seul l'administrateur peut relancer la partie.")
         return redirect(url_for("index"))
+
+    if r.get(f"game:{game_code}:status") != "finished":
+        flash("La partie n'est pas terminée.")
+        return redirect(url_for("game"))
 
     # Seuls les joueurs dont une page est encore active sont conservés au redémarrage.
     listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
@@ -710,36 +718,63 @@ def guess():
             flash("Lettre introuvable")
             return redirect(url_for("game"))
 
-        word = r.get(f"game:{game_code}:word")
-        available_letters = r.lrange(f"game:{game_code}:{word}", 0, -1)
+        transition_key = f"game:{game_code}:skip_transition"
+        transition_token = secrets.token_hex(16)
+        if not r.set(transition_key, transition_token, nx=True, ex=30):
+            flash("Une autre action de la partie est en cours. Réessayez dans un instant.")
+            return redirect(url_for("game"))
 
-        if letter in available_letters:
+        try:
+            if r.get(f"game:{game_code}:status") != "playing":
+                flash("Cette action est disponible uniquement pendant une partie en cours.")
+                return redirect(url_for("game"))
+
+            listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
+            playerplay = r.get(f"game:{game_code}:playerplay")
+            if username not in listplayers or not playerplay or int(playerplay) >= len(listplayers):
+                flash("Vous ne pouvez plus jouer cette lettre dans cette partie.")
+                return redirect(url_for("game"))
+            if listplayers[int(playerplay)] != username:
+                flash(f"Ce n'est pas votre tour de jouer, c'est le tour de {listplayers[int(playerplay)]}.")
+                return redirect(url_for("game"))
+
+            word = r.get(f"game:{game_code}:word")
+            available_letters = r.lrange(f"game:{game_code}:{word}", 0, -1)
+
+            if letter in available_letters:
             
-            if letter in voyelles:
-                # Les voyelles se "payent" 2500 points, contrairement aux consonnes qui sont gratuites.
-                if int(r.get(f"game:{game_code}:score:{username}") or 0) < 2500:
-                    flash(f"Vous n'avez pas assez d'argent pour prendre une voyelle. Il vous faut 2500, vous avez {int(r.get(f'game:{game_code}:score:{username}') or 0)}.")
-                    return redirect(url_for("game"))
+                if letter in voyelles:
+                    # Les voyelles se "payent" 2500 points, contrairement aux consonnes qui sont gratuites.
+                    if int(r.get(f"game:{game_code}:score:{username}") or 0) < 2500:
+                        flash(f"Vous n'avez pas assez d'argent pour prendre une voyelle. Il vous faut 2500, vous avez {int(r.get(f'game:{game_code}:score:{username}') or 0)}.")
+                        return redirect(url_for("game"))
+                    else:
+                        score = word.count(letter)  # Récupère le nombre de lettres du mot pour le score
+                        r.lrem(f"game:{game_code}:{word}", 0, letter)  # Supprime la lettre de la liste des lettres disponibles
+                        r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) - 2500, ex=3600)
+                        if score == 0:
+                            flash(f"La lettre '{letter}' n'est pas dans le mot. Vous avez perdu 2500.")
+                            r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
+
                 else:
                     score = word.count(letter)  # Récupère le nombre de lettres du mot pour le score
                     r.lrem(f"game:{game_code}:{word}", 0, letter)  # Supprime la lettre de la liste des lettres disponibles
-                    r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) - 2500, ex=3600)
+                    r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
+                    r.set(f'game:{game_code}:money', random.randrange(50, 1000, 50), ex=3600)  # Donne de l'argent aléatoire au joueur suivant
                     if score == 0:
-                        flash(f"La lettre '{letter}' n'est pas dans le mot. Vous avez perdu 2500.")
+                        flash(f"La lettre '{letter}' n'est pas dans le mot. Vous n'avez rien gagné.")
                         r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
-
+                return redirect(url_for("game"))
             else:
-                score = word.count(letter)  # Récupère le nombre de lettres du mot pour le score
-                r.lrem(f"game:{game_code}:{word}", 0, letter)  # Supprime la lettre de la liste des lettres disponibles
-                r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
-                r.set(f'game:{game_code}:money', random.randrange(50, 1000, 50), ex=3600)  # Donne de l'argent aléatoire au joueur suivant
-                if score == 0:
-                    flash(f"La lettre '{letter}' n'est pas dans le mot. Vous n'avez rien gagné.")
-                    r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
-            return redirect(url_for("game"))
-        else:
-            flash(f"La lettre '{letter}' n'est pas disponible pour cette partie.")
-            return redirect(url_for("game"))
+                flash(f"La lettre '{letter}' n'est pas disponible pour cette partie.")
+                return redirect(url_for("game"))
+        finally:
+            r.eval(
+                "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+                1,
+                transition_key,
+                transition_token
+            )
 
     elif request.form.get("text"):
         text = request.form.get("text")
@@ -754,6 +789,18 @@ def guess():
             return redirect(url_for("game"))
 
         try:
+            if r.get(f"game:{game_code}:status") != "playing":
+                flash("Cette action est disponible uniquement pendant une partie en cours.")
+                return redirect(url_for("game"))
+            listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
+            playerplay = r.get(f"game:{game_code}:playerplay")
+            if username not in listplayers or not playerplay or int(playerplay) >= len(listplayers):
+                flash("Vous ne pouvez plus jouer cette réponse dans cette partie.")
+                return redirect(url_for("game"))
+            if listplayers[int(playerplay)] != username:
+                flash(f"Ce n'est pas votre tour de jouer, c'est le tour de {listplayers[int(playerplay)]}.")
+                return redirect(url_for("game"))
+
             word = r.get(f"game:{game_code}:word")
             if not word:
                 flash("Mot de la partie introuvable (partie corrompue ou expirée).")

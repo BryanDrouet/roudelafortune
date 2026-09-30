@@ -110,6 +110,69 @@ def test_skip_is_rejected_after_game_is_finished(client):
     assert r.smembers(f"game:{game_code}:skip_votes") == {"alice"}
 
 
+def test_finished_scoreboard_requires_room_membership(client):
+    game_code = "FINISH1"
+    r.set(f"game:{game_code}", "alice", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", "secret", ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    client.set_cookie("username", "intruder", domain="localhost")
+    client.set_cookie("game", game_code, domain="localhost")
+
+    resp = client.get("/game")
+
+    assert resp.status_code == 302
+    assert b"secret" not in resp.data
+
+
+def test_restart_is_rejected_before_game_is_finished(client):
+    game_code = "RESTART1"
+    r.set(f"game:{game_code}", "alice", ex=3600)
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", "secret", ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/restartgame", data={"game_code": game_code})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:status") == "playing"
+    assert r.get(f"game:{game_code}:word") == "secret"
+
+
+def test_letter_action_does_not_mutate_during_round_transition(client):
+    game_code = "LETTERLOCK"
+    word = "casa"
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.set(f"game:{game_code}:money", 100, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    r.rpush(f"game:{game_code}:{word}", *all_letters)
+    r.set(f"game:{game_code}:skip_transition", "transition", ex=30)
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "letter": "c"})
+
+    assert resp.status_code == 302
+    assert "c" in r.lrange(f"game:{game_code}:{word}", 0, -1)
+    assert r.get(f"game:{game_code}:score:alice") is None
+
+
+def test_finished_admin_leave_form_deletes_room(client):
+    game_code = "LEAVEFIN"
+    r.set(f"game:{game_code}", "alice", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    client.set_cookie("username", "alice", domain="localhost")
+    client.set_cookie("game", game_code, domain="localhost")
+
+    resp = client.get("/game")
+
+    assert resp.status_code == 200
+    assert b'name="action" value="delete"' in resp.data
+
+
 def test_concurrent_final_skip_votes_transition_word_once(client, monkeypatch):
     game_code = "SKIPRACE"
     r.set(f"game:{game_code}:status", "playing", ex=3600)

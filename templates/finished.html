@@ -37,6 +37,9 @@
             {% endif %}
             <form action="/leavegame" method="post">
                 <input type="hidden" name="game_code" value="{{ game_code }}">
+                {% if admin %}
+                    <input type="hidden" name="action" value="delete">
+                {% endif %}
                 <button type="submit" class="secondary-btn">Retour à l'accueil</button>
             </form>
         </div>
