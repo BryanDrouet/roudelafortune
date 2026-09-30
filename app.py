@@ -5,6 +5,7 @@ import os
 import pandas
 import hashlib
 import json
+import secrets
 import time
 
 
@@ -14,6 +15,40 @@ consonnes = ["b", "c", "d", "f", "g", "h", "j", "k", "l", "m", "n", "p", "q", "r
 all_letters = voyelles + consonnes
 DEFAULT_ROUNDS = 5
 PLAYER_PRESENCE_TTL = 15
+SKIP_VOTE_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= 'playing' then
+    return {-1, 0}
+end
+if redis.call('EXISTS', KEYS[4]) == 1 then
+    return {-3, 0}
+end
+local players = redis.call('LRANGE', KEYS[2], 0, -1)
+local is_player = false
+for _, player in ipairs(players) do
+    if player == ARGV[1] then
+        is_player = true
+        break
+    end
+end
+if not is_player then
+    return {-2, 0}
+end
+redis.call('SADD', KEYS[3], ARGV[1])
+local votes = 0
+for _, player in ipairs(players) do
+    if redis.call('SISMEMBER', KEYS[3], player) == 1 then
+        votes = votes + 1
+    end
+end
+if #players > 0 and votes >= #players then
+    if redis.call('SET', KEYS[4], ARGV[2], 'NX', 'EX', 30) then
+        redis.call('DEL', KEYS[3])
+        return {1, votes}
+    end
+    return {-3, votes}
+end
+return {0, votes}
+"""
 print("All letters:", all_letters)
 port=int(os.getenv("PORT") or 8000)
 
@@ -175,6 +210,10 @@ def player_presence_key(game_code, username):
     return f"game:{game_code}:presence:{username}"
 
 
+def cursor_users_key(game_code):
+    return f"game:{game_code}:cursor_users"
+
+
 def delete_game_room(game_code):
     if not game_code:
         return
@@ -183,7 +222,7 @@ def delete_game_room(game_code):
     for player in players:
         release_username(player)
 
-    room_keys = [key for key in r.keys(f"game:{game_code}*") if key]
+    room_keys = [f"game:{game_code}", *r.scan_iter(match=f"game:{game_code}:*")]
     for key in room_keys:
         r.delete(key)
 
@@ -563,6 +602,7 @@ def restart_game():
         r.rpush(f"game:{game_code}:players", *active_players)
     for player in departed_players:
         r.delete(f"game:{game_code}:score:{player}", f"game:{game_code}:cursor:{player}")
+        r.srem(cursor_users_key(game_code), player)
 
     old_word = r.get(f"game:{game_code}:word")
 
@@ -597,28 +637,57 @@ def guess():
 
     listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
     playerplay = r.get(f"game:{game_code}:playerplay")
-    if not playerplay or not listplayers:
+    if r.get(f"game:{game_code}:status") != "playing":
+        flash("Cette action est disponible uniquement pendant une partie en cours.")
+        return redirect(url_for("game"))
+
+    if not listplayers:
         flash("La partie est inconnue ou inactive.")
         return redirect(url_for("game"))
 
+    if username not in listplayers:
+        flash("Vous ne faites pas partie de cette partie.")
+        return redirect(url_for("game"))
+
     if request.form.get("action") == "skip":
-        if username not in listplayers:
+        lock_key = f"game:{game_code}:skip_transition"
+        lock_token = secrets.token_hex(16)
+        result, vote_count = r.eval(
+            SKIP_VOTE_SCRIPT,
+            4,
+            f"game:{game_code}:status",
+            f"game:{game_code}:players",
+            f"game:{game_code}:skip_votes",
+            lock_key,
+            username,
+            lock_token
+        )
+        if result == -1:
+            flash("Cette partie n'est plus en cours.")
+        elif result == -2:
             flash("Vous ne faites pas partie de cette partie.")
-            return redirect(url_for("game"))
-
-        # Vote de passage ouvert à tout moment, indépendamment du tour de jeu.
-        r.sadd(f"game:{game_code}:skip_votes", username)
-        active_votes = set(r.smembers(f"game:{game_code}:skip_votes")) & set(listplayers)
-
-        if len(active_votes) >= len(listplayers):
-            r.delete(f"game:{game_code}:skip_votes")
-            current_word = r.get(f"game:{game_code}:word")
-            load_new_round_word(game_code, current_word)
-            # Le vote de passage change juste le mot, le joueur en cours garde la main.
-            flash("Tous les joueurs ont choisi de passer. Aucun point n'a été attribué et un nouveau mot a été choisi.")
+        elif result == -3:
+            flash("Le changement de mot est en cours. Réessayez dans un instant.")
+        elif result == 1:
+            try:
+                current_word = r.get(f"game:{game_code}:word")
+                load_new_round_word(game_code, current_word)
+                flash("Tous les joueurs ont choisi de passer. Aucun point n'a été attribué et un nouveau mot a été choisi.")
+            finally:
+                r.eval(
+                    "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+                    1,
+                    lock_key,
+                    lock_token
+                )
         else:
-            flash(f"{username} a voté pour passer ce mot ({len(active_votes)}/{len(listplayers)} votes).")
+            flash(f"{username} a voté pour passer ce mot ({vote_count}/{len(listplayers)} votes).")
 
+        return redirect(url_for("game"))
+
+    playerplay = r.get(f"game:{game_code}:playerplay")
+    if not playerplay:
+        flash("La partie est inconnue ou inactive.")
         return redirect(url_for("game"))
 
     if listplayers[int(playerplay)] != username:
@@ -723,6 +792,8 @@ def update_cursor():
 
     if not game_code or not username or x is None or y is None:
         return {"error": "game_code, x et y sont requis"}, 400
+    if username not in r.lrange(f"game:{game_code}:players", 0, -1):
+        return {"error": "joueur absent de la partie"}, 403
 
     try:
         x = max(0.0, min(100.0, float(x)))
@@ -731,6 +802,8 @@ def update_cursor():
         return {"error": "x et y doivent être numériques"}, 400
 
     r.set(f"game:{game_code}:cursor:{username}", json.dumps({"x": x, "y": y}), ex=PLAYER_PRESENCE_TTL)
+    r.sadd(cursor_users_key(game_code), username)
+    r.expire(cursor_users_key(game_code), 3600)
     return {"ok": True}, 200
 
 
@@ -755,42 +828,47 @@ def clear_presence():
     if not game_code or not username:
         return {"error": "game_code et username sont requis"}, 400
     r.delete(player_presence_key(game_code, username), f"game:{game_code}:cursor:{username}")
+    r.srem(cursor_users_key(game_code), username)
     return {"ok": True}, 200
 
 
 @app.route('/api/cursors', methods=['POST'])
 def list_cursors():
     game_code = request.form.get("game_code")
+    username = request.cookies.get("username")
 
-    if not game_code:
-        return {"error": "game_code is required"}, 400
+    if not game_code or not username:
+        return {"error": "game_code et username sont requis"}, 400
+
+    listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
+    if username not in listplayers:
+        return {"error": "joueur absent de la partie"}, 403
 
     admin_username = r.get(f"game:{game_code}")
-    listplayers = r.lrange(f"game:{game_code}:players", 0, -1)
     playerplay = r.get(f"game:{game_code}:playerplay")
     current_player_name = None
     if listplayers and playerplay is not None:
         index = int(playerplay) if int(playerplay) < len(listplayers) else 0
         current_player_name = listplayers[index]
 
-    # Une seule salle a un nombre de curseurs limité au nombre de joueurs, KEYS reste donc bon marché ici.
-    prefix = f"game:{game_code}:cursor:"
     cursors = []
-    for key in r.keys(f"{prefix}*"):
-        username = key[len(prefix):]
-        raw = r.get(key)
+    users_key = cursor_users_key(game_code)
+    for cursor_username in r.smembers(users_key):
+        cursor_key = f"game:{game_code}:cursor:{cursor_username}"
+        raw = r.get(cursor_key)
         if not raw:
+            r.srem(users_key, cursor_username)
             continue
         try:
             position = json.loads(raw)
         except (TypeError, ValueError):
             continue
         cursors.append({
-            "username": username,
+            "username": cursor_username,
             "x": position.get("x", 0),
             "y": position.get("y", 0),
-            "is_admin": username == admin_username,
-            "is_current": username == current_player_name
+            "is_admin": cursor_username == admin_username,
+            "is_current": cursor_username == current_player_name
         })
 
     return {"cursors": cursors}, 200

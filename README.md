@@ -14,7 +14,7 @@ Pour démarrer le projet pour la première fois, ou après un changement de dép
 docker compose up --build -d
 ```
 
-Le service `app` démarre par défaut en mode développement avec un montage du dossier local dans le conteneur. Cela permet à Flask de recharger automatiquement les fichiers modifiés, sans refaire un `docker compose up --build` à chaque fois.
+Le service `app` démarre par défaut en mode développement avec un montage du dossier local dans le conteneur. Flask recharge automatiquement les fichiers Python modifiés; les changements de dépendances nécessitent une nouvelle build.
 
 Après la première build, il suffit de lancer :
 
@@ -24,7 +24,7 @@ docker compose up -d
 
 et les changements de code sont pris en compte automatiquement.
 
-Si le port 8000 ou 6379 est déjà utilisé par un autre processus, Docker affichera une erreur de type `address already in use`. Dans ce cas, il faut d'abord arrêter le service qui occupe le port, ou relancer l'app directement sur un port libre.
+Si le port 8000 est déjà utilisé par un autre processus, Docker affichera une erreur de type `address already in use`. Redis reste accessible uniquement sur le réseau interne de Compose et ne publie pas le port 6379 sur l'hôte.
 
 Pour vérifier que l'application est bien disponible :
 

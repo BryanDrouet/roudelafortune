@@ -29,7 +29,7 @@ jobs:
       - name: Lancer les tests unitaires
         env:
           REDIS_HOST: localhost
-        run: pytest tests/ -v
+        run: python -m pytest tests/ -v
 
   build:
     runs-on: ubuntu-latest

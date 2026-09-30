@@ -27,8 +27,17 @@ document.addEventListener('DOMContentLoaded', () => {
         button.addEventListener('click', () => {
             const target = button.dataset.tab;
 
-            buttons.forEach((btn) => btn.classList.toggle('active', btn === button));
-            panels.forEach((panel) => panel.classList.toggle('active', panel.id === target));
+            buttons.forEach((btn) => {
+                const isActive = btn === button;
+                btn.classList.toggle('active', isActive);
+                btn.setAttribute('aria-selected', String(isActive));
+                btn.tabIndex = isActive ? 0 : -1;
+            });
+            panels.forEach((panel) => {
+                const isActive = panel.id === target;
+                panel.classList.toggle('active', isActive);
+                panel.hidden = !isActive;
+            });
         });
     });
 

@@ -1,5 +1,6 @@
 import pytest
 import redis
+from concurrent.futures import ThreadPoolExecutor
 
 import app as app_module
 from app import app, r, generate_game_hash, all_letters
@@ -81,6 +82,90 @@ def test_delete_game_room_releases_player_usernames():
     assert not r.exists(f"game:{game_code}:players")
 
 
+def test_delete_game_room_does_not_delete_room_with_longer_code():
+    r.set("game:1234", "admin", ex=3600)
+    r.set("game:12345", "other-admin", ex=3600)
+    r.rpush("game:12345:players", "other-admin")
+
+    app_module.delete_game_room("1234")
+
+    assert r.get("game:1234") is None
+    assert r.get("game:12345") == "other-admin"
+    assert r.lrange("game:12345:players", 0, -1) == ["other-admin"]
+
+
+def test_skip_is_rejected_after_game_is_finished(client):
+    game_code = "SKIPEND"
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", "casa", ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    r.sadd(f"game:{game_code}:skip_votes", "alice")
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "action": "skip"})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:word") == "casa"
+    assert r.smembers(f"game:{game_code}:skip_votes") == {"alice"}
+
+
+def test_concurrent_final_skip_votes_transition_word_once(client, monkeypatch):
+    game_code = "SKIPRACE"
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", "casa", ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice", "bob")
+    transitions = []
+
+    def load_word_once(code, previous_word=None):
+        transitions.append(code)
+        r.set(f"game:{code}:word", "moto", ex=3600)
+        return "moto"
+
+    monkeypatch.setattr(app_module, "load_new_round_word", load_word_once)
+
+    def cast_vote(username):
+        with app.test_client() as player_client:
+            player_client.set_cookie("username", username, domain="localhost")
+            return player_client.post("/guess", data={"game_code": game_code, "action": "skip"})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(cast_vote, ["alice", "bob"]))
+
+    assert all(response.status_code == 302 for response in responses)
+    assert transitions == [game_code]
+    assert r.get(f"game:{game_code}:word") == "moto"
+
+
+def test_cursor_endpoints_require_room_membership(client):
+    game_code = "CURSOR1"
+    r.rpush(f"game:{game_code}:players", "alice")
+    client.set_cookie("username", "intruder", domain="localhost")
+
+    update_resp = client.post("/api/cursor", data={"game_code": game_code, "x": 20, "y": 30})
+    list_resp = client.post("/api/cursors", data={"game_code": game_code})
+
+    assert update_resp.status_code == 403
+    assert list_resp.status_code == 403
+    assert r.get(f"game:{game_code}:cursor:intruder") is None
+
+
+def test_cursor_listing_uses_room_index_instead_of_scanning_all_redis_keys(client, monkeypatch):
+    game_code = "CURSOR2"
+    r.rpush(f"game:{game_code}:players", "alice", "bob")
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.set(f"game:{game_code}:cursor:bob", '{"x":25,"y":40}', ex=3600)
+    r.sadd(app_module.cursor_users_key(game_code), "bob")
+    client.set_cookie("username", "alice", domain="localhost")
+    monkeypatch.setattr(app_module.r, "keys", lambda *args, **kwargs: pytest.fail("keys() doit rester inutilisé"))
+
+    resp = client.post("/api/cursors", data={"game_code": game_code})
+
+    assert resp.status_code == 200
+    assert resp.json["cursors"][0]["username"] == "bob"
+
+
 def test_deleted_room_shows_room_deleted_message(client):
     game_code = "ROOM88"
     username = "alice"
@@ -110,6 +195,14 @@ def test_pages_are_not_cached_so_cleared_cookies_show_no_pseudo(client):
 
     assert resp.headers["Cache-Control"] == "no-store, no-cache, must-revalidate"
     assert b'value="player_' in resp.data
+
+
+def test_home_tabs_expose_aria_relationships(client):
+    resp = client.get("/")
+
+    assert b'role="tablist"' in resp.data
+    assert b'role="tab" aria-selected="true" aria-controls="join-tab"' in resp.data
+    assert b'role="tabpanel" aria-labelledby="join-tab-button"' in resp.data
 
 
 def test_new_visitors_get_a_unique_reserved_default_username(client):
