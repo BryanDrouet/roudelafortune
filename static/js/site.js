@@ -95,24 +95,49 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const renderedCursors = new Map();
         let lastSent = 0;
+        let pendingPosition = null;
+        let cursorRequestInFlight = false;
+        let cursorSendTimer = null;
+
+        async function sendPendingCursor() {
+            if (cursorRequestInFlight || !pendingPosition) {
+                return;
+            }
+
+            const delay = Math.max(0, 70 - (performance.now() - lastSent));
+            if (delay > 0) {
+                clearTimeout(cursorSendTimer);
+                cursorSendTimer = setTimeout(sendPendingCursor, delay);
+                return;
+            }
+
+            const position = pendingPosition;
+            pendingPosition = null;
+            lastSent = performance.now();
+            cursorRequestInFlight = true;
+            try {
+                await fetch('/api/cursor', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `game_code=${encodeURIComponent(gameCodeValue)}&x=${position.x.toFixed(2)}&y=${position.y.toFixed(2)}`
+                });
+            } catch (error) {
+                // Une mise à jour suivante réessaiera sans bloquer le suivi.
+            } finally {
+                cursorRequestInFlight = false;
+                if (pendingPosition) {
+                    sendPendingCursor();
+                }
+            }
+        }
 
         // Le curseur ne se met à jour que lorsqu'un joueur bouge réellement la souris, pas via un intervalle fixe.
         document.addEventListener('mousemove', (event) => {
-            const now = performance.now();
-            if (now - lastSent < 70) {
-                return;
-            }
-            lastSent = now;
-
-            const x = Math.max(0, Math.min(100, (event.clientX / window.innerWidth) * 100));
-            const y = Math.max(0, Math.min(100, (event.clientY / window.innerHeight) * 100));
-
-            fetch('/api/cursor', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: `game_code=${encodeURIComponent(gameCodeValue)}&x=${x.toFixed(2)}&y=${y.toFixed(2)}`
-            }).catch(() => {});
-
+            pendingPosition = {
+                x: Math.max(0, Math.min(100, (event.clientX / window.innerWidth) * 100)),
+                y: Math.max(0, Math.min(100, (event.clientY / window.innerHeight) * 100))
+            };
+            sendPendingCursor();
         });
 
         async function fetchCursors() {
@@ -274,8 +299,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         (async () => {
             currentHash = await fetchGameHash();
-            // Intervalle très court : le passage de main doit être quasi instantané, sans F5.
-            setInterval(checkForChanges, 400);
+            const pollForChanges = async () => {
+                await checkForChanges();
+                setTimeout(pollForChanges, 1000);
+            };
+            setTimeout(pollForChanges, 1000);
             if (revealTimer) {
                 setTimeout(() => window.location.reload(), revealTimer);
             }

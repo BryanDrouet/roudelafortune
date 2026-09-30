@@ -94,6 +94,36 @@ def test_delete_game_room_does_not_delete_room_with_longer_code():
     assert r.lrange("game:12345:players", 0, -1) == ["other-admin"]
 
 
+def test_secret_key_uses_shared_environment_value(monkeypatch):
+    monkeypatch.setenv("APP_MODE", "prod")
+    monkeypatch.setenv("SECRET_KEY", "shared-production-secret")
+
+    assert app_module.resolve_secret_key() == "shared-production-secret"
+
+
+def test_production_requires_configured_secret_key(monkeypatch):
+    monkeypatch.setenv("APP_MODE", "prod")
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        app_module.resolve_secret_key()
+
+
+def test_valid_username_session_is_persistent(client):
+    r.set("user:alice", "alice", ex=3600)
+    with client.session_transaction() as current_session:
+        current_session["username"] = "alice"
+    app.config["TESTING"] = False
+    try:
+        resp = client.get("/")
+        with client.session_transaction() as current_session:
+            assert current_session.permanent
+    finally:
+        app.config["TESTING"] = True
+
+    assert resp.status_code == 200
+
+
 def test_skip_is_rejected_after_game_is_finished(client):
     game_code = "SKIPEND"
     r.set(f"game:{game_code}:status", "finished", ex=3600)
@@ -212,6 +242,7 @@ def test_concurrent_final_skip_votes_transition_word_once(client, monkeypatch):
     r.set(f"game:{game_code}:status", "playing", ex=3600)
     r.set(f"game:{game_code}:word", "casa", ex=3600)
     r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.set(f"game:{game_code}:nb_words", 2, ex=3600)
     r.rpush(f"game:{game_code}:players", "alice", "bob")
     transitions = []
 
@@ -278,6 +309,20 @@ def test_leaving_room_cleans_presence_and_cursor_records(client):
     assert r.get(app_module.player_presence_key(game_code, username)) is None
     assert r.get(f"game:{game_code}:cursor:{username}") is None
     assert username not in r.smembers(app_module.cursor_users_key(game_code))
+
+
+def test_leaving_room_preserves_current_player_turn(client):
+    game_code = "LEAVETURN"
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:playerplay", 2, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice", "bob", "carol")
+    client.set_cookie("username", "bob", domain="localhost")
+
+    resp = client.post("/leavegame", data={"game_code": game_code})
+
+    assert resp.status_code == 302
+    assert r.lrange(f"game:{game_code}:players", 0, -1) == ["alice", "carol"]
+    assert r.get(f"game:{game_code}:playerplay") == "1"
 
 
 def test_deleted_room_shows_room_deleted_message(client):
@@ -508,8 +553,28 @@ def test_all_players_skip_reloads_word_in_redis(client, monkeypatch):
     assert resp.status_code == 302
 
     assert r.get(f"game:{game_code}:word") == new_word
+    assert r.get(f"game:{game_code}:nb_words") == "1"
     assert r.get(f"game:{game_code}:skip_votes") is None
     assert not r.exists(f"game:{game_code}:{old_word}")
+
+
+def test_skipping_final_word_finishes_game_without_loading_another(client, monkeypatch):
+    game_code = "SKIPFINAL"
+    word = "casa"
+    monkeypatch.setattr(app_module, "load_new_round_word", lambda *args, **kwargs: pytest.fail("Ne doit pas charger de mot supplémentaire"))
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.set(f"game:{game_code}:nb_words", 1, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "action": "skip"})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:status") == "finished"
+    assert r.get(f"game:{game_code}:nb_words") == "0"
+    assert r.get(f"game:{game_code}:word") == word
 
 
 def test_winner_of_the_word_plays_first_on_the_next_round(client, monkeypatch):

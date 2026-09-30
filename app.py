@@ -7,6 +7,7 @@ import hashlib
 import json
 import secrets
 import time
+from datetime import timedelta
 
 
 #env
@@ -118,11 +119,22 @@ def generate_game_hash(game_code):
     return hashlib.sha256(data_str.encode()).hexdigest()[:8]
 
 app = Flask(__name__)
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(seconds=3600)
 
 random.seed()
 secure_random = random.SystemRandom()
-key = random.randrange(1111111111, 9999999999, 1)
-app.secret_key = os.getenv("SECRET_KEY", f"secret_key_{key}")
+
+
+def resolve_secret_key():
+    secret_key = os.getenv("SECRET_KEY")
+    if secret_key:
+        return secret_key
+    if os.getenv("APP_MODE") == "prod":
+        raise RuntimeError("SECRET_KEY doit être configurée en production.")
+    return "development-only-secret-key-change-before-production"
+
+
+app.secret_key = resolve_secret_key()
 
 
 def authenticated_username():
@@ -130,6 +142,7 @@ def authenticated_username():
     if app.config.get("TESTING"):
         return username
     if username and r.get(f"user:{username}") == username:
+        session.permanent = True
         return username
     session.pop("username", None)
     return None
@@ -277,6 +290,7 @@ def index():
 
     if newly_assigned:
         session["username"] = newly_assigned
+        session.permanent = True
         resp.set_cookie("username", newly_assigned, max_age=3600, secure=request.is_secure, httponly=True)
 
     return resp
@@ -325,6 +339,7 @@ def set_username():
         return redirect(url_for("index"))
 
     session["username"] = username
+    session.permanent = True
     resp = redirect(url_for("index"))
     resp.set_cookie('username', username, max_age=3600, secure=request.is_secure, httponly=True)
     return resp
@@ -493,7 +508,22 @@ def leave_game():
     else:
         players = r.lrange(f"game:{game_code}:players", 0, -1)
         if username in players:
+            removed_index = players.index(username)
+            game_status = r.get(f"game:{game_code}:status")
+            playerplay = r.get(f"game:{game_code}:playerplay")
+            current_player = None
+            if game_status == "playing" and playerplay and playerplay.isdigit() and int(playerplay) < len(players):
+                current_player = players[int(playerplay)]
+
             r.lrem(f"game:{game_code}:players", 0, username)
+            remaining_players = [player for player in players if player != username]
+            if game_status == "playing":
+                if not remaining_players:
+                    r.delete(f"game:{game_code}:playerplay")
+                elif current_player in remaining_players:
+                    r.set(f"game:{game_code}:playerplay", remaining_players.index(current_player), ex=3600)
+                else:
+                    r.set(f"game:{game_code}:playerplay", removed_index % len(remaining_players), ex=3600)
         r.srem(f"game:{game_code}:skip_votes", username)
         r.delete(player_presence_key(game_code, username), f"game:{game_code}:cursor:{username}")
         r.srem(cursor_users_key(game_code), username)
@@ -695,9 +725,15 @@ def guess():
             flash("Le changement de mot est en cours. Réessayez dans un instant.")
         elif result == 1:
             try:
-                current_word = r.get(f"game:{game_code}:word")
-                load_new_round_word(game_code, current_word)
-                flash("Tous les joueurs ont choisi de passer. Aucun point n'a été attribué et un nouveau mot a été choisi.")
+                remaining_words = int(r.get(f"game:{game_code}:nb_words") or 1) - 1
+                r.set(f"game:{game_code}:nb_words", max(remaining_words, 0), ex=3600)
+                if remaining_words <= 0:
+                    r.set(f"game:{game_code}:status", "finished", ex=3600)
+                    flash("Tous les joueurs ont choisi de passer. Aucun point n'a été attribué. La partie est terminée.")
+                else:
+                    current_word = r.get(f"game:{game_code}:word")
+                    load_new_round_word(game_code, current_word)
+                    flash(f"Tous les joueurs ont choisi de passer. Aucun point n'a été attribué. Il reste {remaining_words} mots.")
             finally:
                 r.eval(
                     "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",

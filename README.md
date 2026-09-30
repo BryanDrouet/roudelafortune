@@ -43,6 +43,16 @@ Le projet est bien accessible avec la réponse `HTTP/1.1 200 OK`.
 
 Pour passer en mode production (uWSGI), lancez :
 
+Configurez une clé stable dans `.env` (ne la commitez pas) :
+
+```bash
+SECRET_KEY=une-cle-aleatoire-longue-et-secrete
+```
+
+Cette même clé est utilisée par tous les workers uWSGI pour signer les sessions.
+La session expire après une heure, comme la réservation du pseudo. En production,
+l'application refuse de démarrer si `SECRET_KEY` est absente.
+
 ```bash
 APP_MODE=prod docker compose up -d --build
 ```
