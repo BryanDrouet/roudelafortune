@@ -229,6 +229,23 @@ def test_cursor_listing_uses_room_index_instead_of_scanning_all_redis_keys(clien
     assert resp.json["cursors"][0]["username"] == "bob"
 
 
+def test_leaving_room_cleans_presence_and_cursor_records(client):
+    game_code = "LEAVECURSOR"
+    username = "alice"
+    r.rpush(f"game:{game_code}:players", username, "bob")
+    r.set(app_module.player_presence_key(game_code, username), "1", ex=3600)
+    r.set(f"game:{game_code}:cursor:{username}", '{"x":25,"y":40}', ex=3600)
+    r.sadd(app_module.cursor_users_key(game_code), username, "bob")
+    client.set_cookie("username", username, domain="localhost")
+
+    resp = client.post("/leavegame", data={"game_code": game_code})
+
+    assert resp.status_code == 302
+    assert r.get(app_module.player_presence_key(game_code, username)) is None
+    assert r.get(f"game:{game_code}:cursor:{username}") is None
+    assert username not in r.smembers(app_module.cursor_users_key(game_code))
+
+
 def test_deleted_room_shows_room_deleted_message(client):
     game_code = "ROOM88"
     username = "alice"

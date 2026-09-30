@@ -489,6 +489,8 @@ def leave_game():
         if username in players:
             r.lrem(f"game:{game_code}:players", 0, username)
         r.srem(f"game:{game_code}:skip_votes", username)
+        r.delete(player_presence_key(game_code, username), f"game:{game_code}:cursor:{username}")
+        r.srem(cursor_users_key(game_code), username)
         release_username(username)
         flash(f"Vous avez quitté la salle '{game_code}'.")
 
