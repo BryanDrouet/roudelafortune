@@ -56,7 +56,7 @@ jobs:
       - name: Run Redis
         run: docker run -d -p 6379:6379 redis:7-alpine
       - name: Run the Docker image
-        run: docker run -d -p 8000:8000 -e REDIS_HOST=host.docker.internal --add-host=host.docker.internal:host-gateway my-image-name:ci
+        run: docker run -d -p 8000:8000 -e REDIS_HOST=host.docker.internal -e SECRET_KEY=ci-smoke-test-secret-key --add-host=host.docker.internal:host-gateway my-image-name:ci
       - name: Attendre le démarrage de l'app
         run: |
           for i in $(seq 1 30); do

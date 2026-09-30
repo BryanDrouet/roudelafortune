@@ -65,16 +65,20 @@ def resolve_redis_host():
 
 # Essaie l'hôte configuré puis une liste de secours, pour tolérer les environnements
 # Docker où le nom de service "redis" ne se résout pas toujours (ex. sandbox de dev).
+# En production, on ne bascule jamais vers un hôte de secours non configuré : mieux
+# vaut échouer au démarrage que de se connecter à une instance Redis inconnue.
 def build_redis_client():
     configured_host = resolve_redis_host()
+    is_prod = os.getenv("APP_MODE") == "prod"
     host_candidates = []
 
     if configured_host:
         host_candidates.append(configured_host)
 
-    for fallback in ("redis", "host.docker.internal", "localhost", "127.0.0.1"):
-        if fallback not in host_candidates:
-            host_candidates.append(fallback)
+    if not is_prod:
+        for fallback in ("redis", "host.docker.internal", "localhost", "127.0.0.1"):
+            if fallback not in host_candidates:
+                host_candidates.append(fallback)
 
     for host in dict.fromkeys(host_candidates):
         client = redis.Redis(
@@ -90,6 +94,9 @@ def build_redis_client():
             return client
         except redis.exceptions.RedisError as exc:
             print(f"Redis unavailable on {host}: {exc}")
+
+    if is_prod:
+        raise RuntimeError(f"Impossible de se connecter à Redis sur l'hôte configuré ({configured_host}).")
 
     return redis.Redis(
         host=configured_host,
@@ -507,23 +514,27 @@ def leave_game():
         flash(f"La salle '{game_code}' a été supprimée.")
     else:
         players = r.lrange(f"game:{game_code}:players", 0, -1)
-        if username in players:
-            removed_index = players.index(username)
-            game_status = r.get(f"game:{game_code}:status")
-            playerplay = r.get(f"game:{game_code}:playerplay")
-            current_player = None
-            if game_status == "playing" and playerplay and playerplay.isdigit() and int(playerplay) < len(players):
-                current_player = players[int(playerplay)]
+        if username not in players:
+            flash("Vous ne faites pas partie de cette salle.")
+            return redirect(url_for("index"))
 
-            r.lrem(f"game:{game_code}:players", 0, username)
-            remaining_players = [player for player in players if player != username]
-            if game_status == "playing":
-                if not remaining_players:
-                    r.delete(f"game:{game_code}:playerplay")
-                elif current_player in remaining_players:
-                    r.set(f"game:{game_code}:playerplay", remaining_players.index(current_player), ex=3600)
-                else:
-                    r.set(f"game:{game_code}:playerplay", removed_index % len(remaining_players), ex=3600)
+        removed_index = players.index(username)
+        game_status = r.get(f"game:{game_code}:status")
+        playerplay = r.get(f"game:{game_code}:playerplay")
+        current_player = None
+        if game_status == "playing" and playerplay and playerplay.isdigit() and int(playerplay) < len(players):
+            current_player = players[int(playerplay)]
+
+        r.lrem(f"game:{game_code}:players", 0, username)
+        remaining_players = [player for player in players if player != username]
+        if game_status == "playing":
+            if not remaining_players:
+                r.delete(f"game:{game_code}:playerplay")
+            elif current_player in remaining_players:
+                r.set(f"game:{game_code}:playerplay", remaining_players.index(current_player), ex=3600)
+            else:
+                r.set(f"game:{game_code}:playerplay", removed_index % len(remaining_players), ex=3600)
+
         r.srem(f"game:{game_code}:skip_votes", username)
         r.delete(player_presence_key(game_code, username), f"game:{game_code}:cursor:{username}")
         r.srem(cursor_users_key(game_code), username)

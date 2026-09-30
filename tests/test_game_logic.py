@@ -325,6 +325,19 @@ def test_leaving_room_preserves_current_player_turn(client):
     assert r.get(f"game:{game_code}:playerplay") == "1"
 
 
+def test_leavegame_rejects_non_member_without_releasing_username(client):
+    other_game_code = "OTHERROOM"
+    r.rpush(f"game:{other_game_code}:players", "alice")
+    r.set("user:intruder", "intruder", ex=3600)
+    client.set_cookie("username", "intruder", domain="localhost")
+
+    resp = client.post("/leavegame", data={"game_code": other_game_code})
+
+    assert resp.status_code == 302
+    assert r.lrange(f"game:{other_game_code}:players", 0, -1) == ["alice"]
+    assert r.get("user:intruder") == "intruder"
+
+
 def test_deleted_room_shows_room_deleted_message(client):
     game_code = "ROOM88"
     username = "alice"
@@ -451,6 +464,27 @@ def test_build_redis_client_falls_back_to_host_docker_internal(monkeypatch):
     assert client.host == "host.docker.internal"
     assert "redis" in attempts
     assert "host.docker.internal" in attempts
+
+
+def test_build_redis_client_does_not_fall_back_in_production(monkeypatch):
+    attempts = []
+
+    class DummyRedis:
+        def __init__(self, host, **kwargs):
+            self.host = host
+            attempts.append(host)
+
+        def ping(self):
+            raise redis.exceptions.TimeoutError("Timeout connecting to server")
+
+    monkeypatch.setenv("APP_MODE", "prod")
+    monkeypatch.setattr(app_module.redis, "Redis", DummyRedis)
+    monkeypatch.setattr(app_module, "resolve_redis_host", lambda: "redis")
+
+    with pytest.raises(RuntimeError, match="redis"):
+        app_module.build_redis_client()
+
+    assert attempts == ["redis"]
 
 
 def test_same_username_is_allowed_for_current_user(client):
