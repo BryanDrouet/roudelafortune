@@ -126,7 +126,13 @@ app.secret_key = os.getenv("SECRET_KEY", f"secret_key_{key}")
 
 
 def authenticated_username():
-    return session.get("username")
+    username = session.get("username")
+    if app.config.get("TESTING"):
+        return username
+    if username and r.get(f"user:{username}") == username:
+        return username
+    session.pop("username", None)
+    return None
 
 
 @app.before_request
@@ -705,9 +711,9 @@ def guess():
         return redirect(url_for("game"))
 
     playerplay = r.get(f"game:{game_code}:playerplay")
-    if not playerplay:
-        flash("La partie est inconnue ou inactive.")
-        return redirect(url_for("game"))
+    if not playerplay or not playerplay.isdigit() or int(playerplay) >= len(listplayers):
+        playerplay = "0"
+        r.set(f"game:{game_code}:playerplay", playerplay, ex=3600)
 
     if listplayers[int(playerplay)] != username:
         flash(f"Ce n'est pas votre tour de jouer, c'est le tour de {listplayers[int(playerplay)]}.")

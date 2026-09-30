@@ -110,6 +110,40 @@ def test_skip_is_rejected_after_game_is_finished(client):
     assert r.smembers(f"game:{game_code}:skip_votes") == {"alice"}
 
 
+def test_guess_normalizes_player_index_after_player_leaves(client):
+    game_code = "STALETURN"
+    word = "casa"
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 1, ex=3600)
+    r.set(f"game:{game_code}:money", 100, ex=3600)
+    r.rpush(f"game:{game_code}:players", "alice")
+    r.rpush(f"game:{game_code}:{word}", *all_letters)
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "letter": "c"})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:playerplay") == "0"
+    assert r.get(f"game:{game_code}:score:alice") == "100"
+
+
+def test_stale_session_username_is_cleared_without_reservation(client):
+    with client.session_transaction() as current_session:
+        current_session["username"] = "alice"
+    app.config["TESTING"] = False
+    try:
+        resp = client.post("/newgame")
+        with client.session_transaction() as current_session:
+            assert "username" not in current_session
+    finally:
+        app.config["TESTING"] = True
+
+    assert resp.status_code == 302
+    assert not r.exists("user:alice")
+    assert not list(r.scan_iter(match="game:*"))
+
+
 def test_finished_scoreboard_requires_room_membership(client):
     game_code = "FINISH1"
     r.set(f"game:{game_code}", "alice", ex=3600)

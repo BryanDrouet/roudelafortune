@@ -39,6 +39,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 panel.hidden = !isActive;
             });
         });
+
+        button.addEventListener('keydown', (event) => {
+            const buttonList = Array.from(buttons);
+            const currentIndex = buttonList.indexOf(button);
+            let nextIndex = currentIndex;
+
+            if (event.key === 'ArrowRight') {
+                nextIndex = (currentIndex + 1) % buttonList.length;
+            } else if (event.key === 'ArrowLeft') {
+                nextIndex = (currentIndex - 1 + buttonList.length) % buttonList.length;
+            } else if (event.key === 'Home') {
+                nextIndex = 0;
+            } else if (event.key === 'End') {
+                nextIndex = buttonList.length - 1;
+            } else {
+                return;
+            }
+
+            event.preventDefault();
+            buttonList[nextIndex].focus();
+            buttonList[nextIndex].click();
+        });
     });
 
     const pageContext = document.body.dataset.page || null;
