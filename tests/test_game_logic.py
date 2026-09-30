@@ -822,3 +822,20 @@ def test_restart_game_rejects_non_admin(client):
 
     assert resp.status_code == 200
     assert r.get(f"game:{game_code}:status") == "finished"
+
+def test_restart_game_rejects_admin_who_left_the_room(client):
+    # L'ancien admin a quitté la salle (il n'est plus dans players), mais la clé
+    # game:<code> pointe encore vers son pseudo : il ne doit pas pouvoir relancer.
+    game_code = "END05"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", "casa", ex=3600)
+    r.rpush(f"game:{game_code}:players", "bob")
+
+    client.set_cookie("username", "admin", domain="localhost")
+    resp = client.post("/restartgame", data={"game_code": game_code})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:status") == "finished"
+    assert r.get(f"game:{game_code}:word") == "casa"
+    assert r.lrange(f"game:{game_code}:players", 0, -1) == ["bob"]

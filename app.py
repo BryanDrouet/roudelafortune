@@ -648,7 +648,8 @@ def restart_game():
         flash("Partie ou utilisateur introuvable.")
         return redirect(url_for("index"))
 
-    if r.get(f"game:{game_code}") != username:
+    players = r.lrange(f"game:{game_code}:players", 0, -1)
+    if username not in players or r.get(f"game:{game_code}") != username:
         flash("Seul l'administrateur peut relancer la partie.")
         return redirect(url_for("index"))
 
