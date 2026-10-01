@@ -238,10 +238,29 @@ def get_available_words(exclude=None):
         return "defaultword"  # Fallback word list
 
 
+def count_masked_letters(word, available_letters):
+    # Nombre de cases encore masquées dans le mot : une lettre reste masquée tant
+    # qu'elle fait partie des lettres pas encore jouées (même logique que l'affichage).
+    return sum(1 for char in word if char in available_letters)
+
+
 def release_username(username):
     if not username:
         return
     r.delete(f"user:{username}")
+
+
+# Prolonge la réservation seulement si elle appartient toujours à ce pseudo.
+# Le test et l'EXPIRE sont faits en une seule opération Redis, donc un autre visiteur
+# qui prend le pseudo entre-temps n'est jamais écrasé.
+RENEW_USERNAME_SCRIPT = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+    "return redis.call('EXPIRE', KEYS[1], ARGV[2]) else return 0 end"
+)
+
+
+def renew_username_reservation(username):
+    return bool(r.eval(RENEW_USERNAME_SCRIPT, 1, f"user:{username}", username, 3600))
 
 
 def reserve_default_username(max_attempts=5):
@@ -338,8 +357,8 @@ def set_username():
             flash("Le nom d'utilisateur doit contenir entre 3 et 20 caractères.")
             return redirect(url_for("index"))
 
-        if username == current_username:
-            r.set(f"user:{username}", username, ex=3600)
+        if username == current_username and renew_username_reservation(username):
+            pass  # réservation prolongée, rien d'autre à faire
         else:
             # Réservation atomique pour éviter que deux clients ne prennent le même pseudo en même temps.
             claimed = r.set(f"user:{username}", username, nx=True, ex=3600)
@@ -347,7 +366,9 @@ def set_username():
                 flash(f"Le pseudo '{username}' est déjà pris.")
                 return redirect(url_for("index"))
 
-            if current_username and r.get(f"user:{current_username}") == current_username:
+            # On libère l'ancien pseudo seulement s'il est différent du nouveau
+            # (sinon on supprimerait la réservation qu'on vient de reprendre).
+            if current_username and current_username != username and r.get(f"user:{current_username}") == current_username:
                 r.delete(f"user:{current_username}")
     except redis.exceptions.RedisError as exc:
         print(f"Redis error while updating username: {exc}")
@@ -369,7 +390,9 @@ def newgame():
         return redirect(url_for("index"))
 
     # Le pseudo est déjà attribué par défaut, on renouvelle juste sa réservation.
-    r.set(f"user:{username}", username, ex=3600)
+    if not renew_username_reservation(username):
+        session.pop("username", None)
+        return redirect(url_for("index"))
 
     if request.cookies.get("game"):
         return redirect(url_for("game"))
@@ -413,7 +436,9 @@ def joingame(game_code=None):
         return redirect(url_for("index"))
 
     # Le pseudo est déjà attribué par défaut, on renouvelle juste sa réservation.
-    r.set(f"user:{username}", username, ex=3600)
+    if not renew_username_reservation(username):
+        session.pop("username", None)
+        return redirect(url_for("index"))
 
     if not game_code:
         game_code = request.form.get("game_code")
@@ -516,7 +541,9 @@ def leave_game():
         return redirect(url_for("index"))
 
     if request.form.get("action") == "delete":
-        if r.get(f"game:{game_code}") != username:
+        # Propriétaire de la salle ET toujours présent dans la liste des joueurs
+        # (un admin parti via /leavegame garde sinon une clé de propriétaire périmée).
+        if username not in r.lrange(f"game:{game_code}:players", 0, -1) or r.get(f"game:{game_code}") != username:
             flash("Vous n'êtes pas l'administrateur de cette salle.")
             return redirect(url_for("waiting"))
         delete_game_room(game_code)
@@ -684,8 +711,10 @@ def restart_game():
 
     old_word = r.get(f"game:{game_code}:word")
 
-    for player in active_players:
-        r.delete(f"game:{game_code}:score:{player}")
+    # Remise à zéro de TOUS les scores de la salle (y compris ceux d'anciens joueurs
+    # partis puis revenus avec le même pseudo), pas seulement ceux des joueurs actifs.
+    for score_key in list(r.scan_iter(match=f"game:{game_code}:score:*")):
+        r.delete(score_key)
 
     r.delete(f"game:{game_code}:playerplay")
     r.delete(f"game:{game_code}:last_event")
@@ -816,19 +845,25 @@ def guess():
                         flash(f"Vous n'avez pas assez d'argent pour prendre une voyelle. Il vous faut 2500, vous avez {int(r.get(f'game:{game_code}:score:{username}') or 0)}.")
                         return redirect(url_for("game"))
                     else:
-                        score = word.count(letter)  # Récupère le nombre de lettres du mot pour le score
+                        occurrences = word.count(letter)  # Nombre de fois où la voyelle apparaît dans le mot
+                        current_money = int(r.get(f"game:{game_code}:money") or 100)
                         r.lrem(f"game:{game_code}:{word}", 0, letter)  # Supprime la lettre de la liste des lettres disponibles
-                        r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) - 2500, ex=3600)
-                        if score == 0:
+                        # La voyelle coûte 2500, mais rapporte la valeur de la roue pour CHAQUE occurrence trouvée.
+                        gain = occurrences * current_money
+                        r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) - 2500 + gain, ex=3600)
+                        r.set(f'game:{game_code}:money', random.randrange(50, 1000, 50), ex=3600)  # Nouvelle valeur de roue pour le joueur suivant
+                        if occurrences == 0:
                             flash(f"La lettre '{letter}' n'est pas dans le mot. Vous avez perdu 2500.")
                             r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
 
                 else:
-                    score = word.count(letter)  # Récupère le nombre de lettres du mot pour le score
+                    occurrences = word.count(letter)  # Nombre de fois où la consonne apparaît dans le mot
                     r.lrem(f"game:{game_code}:{word}", 0, letter)  # Supprime la lettre de la liste des lettres disponibles
-                    r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score * int(r.get(f"game:{game_code}:money") or 100), ex=3600)
+                    # Une consonne rapporte la valeur de la roue UNE seule fois, quel que soit son nombre d'occurrences.
+                    gain = int(r.get(f"game:{game_code}:money") or 100) if occurrences > 0 else 0
+                    r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + gain, ex=3600)
                     r.set(f'game:{game_code}:money', random.randrange(50, 1000, 50), ex=3600)  # Donne de l'argent aléatoire au joueur suivant
-                    if score == 0:
+                    if occurrences == 0:
                         flash(f"La lettre '{letter}' n'est pas dans le mot. Vous n'avez rien gagné.")
                         r.set(f"game:{game_code}:playerplay", (int(playerplay) + 1) % len(listplayers), ex=3600)  # Passe au joueur suivant
                 return redirect(url_for("game"))
@@ -883,7 +918,10 @@ def guess():
                     "message": final_message,
                     "time": int(time.time())
                 }), ex=6)
-                score = len(word) * int(r.get(f"game:{game_code}:money") or 100)
+                # Bonus de manche : valeur de la roue × nombre de lettres encore masquées.
+                # Mieux vaut donc jouer les consonnes d'abord et garder les voyelles cachées.
+                masked_letters = count_masked_letters(word, r.lrange(f"game:{game_code}:{word}", 0, -1))
+                score = masked_letters * int(r.get(f"game:{game_code}:money") or 100)
                 r.set(f"game:{game_code}:score:{username}", int(r.get(f"game:{game_code}:score:{username}") or 0) + score, ex=3600)
                 r.set(f"game:{game_code}:nb_words", int(nb_words) - 1, ex=3600)
                 if int(nb_words) - 1 <= 0:

@@ -413,6 +413,8 @@ def test_new_visitors_get_a_unique_reserved_default_username(client):
 
 
 def test_joining_game_silently_renews_username_reservation(client):
+    # La réservation existe déjà avec un TTL court : rejoindre une partie doit la prolonger.
+    r.set("user:alice", "alice", ex=60)
     client.set_cookie("username", "alice", domain="localhost")
 
     resp = client.post("/joingame", data={"game_code": "1234"}, follow_redirects=True)
@@ -420,6 +422,25 @@ def test_joining_game_silently_renews_username_reservation(client):
     assert resp.status_code == 200
     assert b"Veuillez valider votre pseudo" not in resp.data
     assert r.get("user:alice") == "alice"
+    assert r.ttl("user:alice") > 60
+
+
+def test_username_renewal_never_overwrites_someone_elses_reservation():
+    r.set("user:alice", "someone-else", ex=60)
+
+    assert app_module.renew_username_reservation("alice") is False
+    assert r.get("user:alice") == "someone-else"
+    assert r.ttl("user:alice") <= 60
+
+    r.set("user:alice", "alice", ex=60)
+
+    assert app_module.renew_username_reservation("alice") is True
+    assert r.ttl("user:alice") > 60
+
+    r.delete("user:alice")
+
+    assert app_module.renew_username_reservation("alice") is False
+    assert r.get("user:alice") is None
 
 
 def test_admin_stays_first_in_players_board_after_others_join(client):
@@ -654,6 +675,8 @@ def test_winner_gets_points_for_the_final_word(client):
     r.set(f"game:{game_code}:money", 200, ex=3600)
     r.set(f"game:{game_code}:nb_words", 1, ex=3600)
     r.rpush(f"game:{game_code}:players", "alice")
+    # Aucune lettre jouée : les 4 lettres du mot sont encore masquées (4 x 200 = 800)
+    r.rpush(f"game:{game_code}:{word}", *all_letters)
 
     client.set_cookie("username", "alice", domain="localhost")
     resp = client.post("/guess", data={"game_code": game_code, "text": word})
@@ -850,3 +873,98 @@ def test_restart_game_rejects_admin_who_left_the_room(client):
     assert r.get(f"game:{game_code}:status") == "finished"
     assert r.get(f"game:{game_code}:word") == "casa"
     assert r.lrange(f"game:{game_code}:players", 0, -1) == ["bob"]
+
+
+def _start_scoring_game(game_code, word, player, money, score=0, revealed=()):
+    # Prépare une partie en cours ; "revealed" = lettres déjà jouées (donc plus dans la liste des lettres disponibles).
+    r.set(f"game:{game_code}", player, ex=3600)
+    r.set(f"game:{game_code}:status", "playing", ex=3600)
+    r.set(f"game:{game_code}:word", word, ex=3600)
+    r.set(f"game:{game_code}:playerplay", 0, ex=3600)
+    r.set(f"game:{game_code}:money", money, ex=3600)
+    r.set(f"game:{game_code}:nb_words", 3, ex=3600)
+    r.rpush(f"game:{game_code}:players", player)
+    r.rpush(f"game:{game_code}:{word}", *[letter for letter in all_letters if letter not in revealed])
+    if score:
+        r.set(f"game:{game_code}:score:{player}", score, ex=3600)
+
+
+def test_vowel_pays_wheel_value_for_each_occurrence(client):
+    game_code = "VOWEL01"
+    _start_scoring_game(game_code, "mettre", "alice", money=300, score=2500)
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "letter": "e"})
+
+    assert resp.status_code == 302
+    # 2500 - 2500 (coût de la voyelle) + 2 occurrences x 300
+    assert r.get(f"game:{game_code}:score:alice") == "600"
+
+
+def test_consonant_pays_wheel_value_only_once(client):
+    game_code = "CONSO01"
+    _start_scoring_game(game_code, "mettre", "alice", money=300)
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "letter": "t"})
+
+    assert resp.status_code == 302
+    # "t" apparaît 2 fois dans "mettre" mais ne rapporte qu'une fois la valeur de la roue
+    assert r.get(f"game:{game_code}:score:alice") == "300"
+
+
+def test_round_win_is_wheel_value_times_masked_letters(client):
+    game_code = "BONUS01"
+    # Consonnes m, t, r déjà jouées : il reste les deux "e" masqués
+    _start_scoring_game(game_code, "mettre", "alice", money=500, revealed=("m", "t", "r"))
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "text": "mettre"})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:score:alice") == "1000"
+
+
+def test_round_win_with_every_letter_masked_uses_word_length(client):
+    game_code = "BONUS02"
+    _start_scoring_game(game_code, "mettre", "alice", money=500)
+    client.set_cookie("username", "alice", domain="localhost")
+
+    resp = client.post("/guess", data={"game_code": game_code, "text": "mettre"})
+
+    assert resp.status_code == 302
+    assert r.get(f"game:{game_code}:score:alice") == "3000"
+
+
+def test_restart_resets_every_score_including_stale_ones(client):
+    game_code = "RESET01"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "finished", ex=3600)
+    r.set(f"game:{game_code}:word", "casa", ex=3600)
+    r.rpush(f"game:{game_code}:players", "admin", "bob")
+    r.set(app_module.player_presence_key(game_code, "bob"), "1", ex=15)
+    r.set(f"game:{game_code}:score:admin", 800, ex=3600)
+    r.set(f"game:{game_code}:score:bob", 400, ex=3600)
+    # Score resté en base d'un ancien joueur parti de la salle (absent de la liste des joueurs)
+    r.set(f"game:{game_code}:score:ghost", 700, ex=3600)
+    client.set_cookie("username", "admin", domain="localhost")
+
+    resp = client.post("/restartgame", data={"game_code": game_code})
+
+    assert resp.status_code == 302
+    assert r.keys(f"game:{game_code}:score:*") == []
+
+
+def test_room_deletion_rejects_admin_who_left_the_room(client):
+    game_code = "DELLEFT1"
+    r.set(f"game:{game_code}", "admin", ex=3600)
+    r.set(f"game:{game_code}:status", "waiting", ex=3600)
+    r.rpush(f"game:{game_code}:players", "bob")
+    client.set_cookie("username", "admin", domain="localhost")
+    client.set_cookie("game", game_code, domain="localhost")
+
+    resp = client.post("/leavegame", data={"game_code": game_code, "action": "delete"})
+
+    assert resp.status_code == 302
+    assert r.exists(f"game:{game_code}")
+    assert r.get(f"game:{game_code}:status") == "waiting"
