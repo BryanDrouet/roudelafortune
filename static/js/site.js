@@ -76,9 +76,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         updatePresence();
         setInterval(updatePresence, 5000);
-        window.addEventListener('pagehide', () => {
-            navigator.sendBeacon('/api/presence/leave', new URLSearchParams({ game_code: gameCodeValue }));
-        });
+        // Pas de beacon sur « pagehide » : cet événement part aussi à chaque rechargement
+        // automatique de la page (polling du hash), ce qui supprimait la présence et le
+        // curseur du joueur à chaque rafraîchissement. Si le joueur ferme l'onglet, sa
+        // présence expire toute seule après le TTL côté serveur ; s'il quitte
+        // explicitement, /leavegame nettoie sa présence.
     }
 
     // Curseurs des joueurs en direct, façon Figma/Canva : haute fréquence, pas d'animation de rattrapage.
@@ -310,4 +312,3 @@ document.addEventListener('DOMContentLoaded', () => {
         })();
     }
 });
-
