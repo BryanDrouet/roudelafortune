@@ -51,7 +51,8 @@ SECRET_KEY=une-cle-aleatoire-longue-et-secrete
 
 Cette même clé est utilisée par tous les workers uWSGI pour signer les sessions.
 La session expire après une heure, comme la réservation du pseudo. En production,
-l'application refuse de démarrer si `SECRET_KEY` est absente.
+si `SECRET_KEY` est absente, l'application génère une clé partagée et la conserve
+dans Redis. Définir `SECRET_KEY` reste recommandé : elle est alors prioritaire.
 
 ```bash
 APP_MODE=prod docker compose up -d --build
