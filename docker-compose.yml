@@ -36,7 +36,7 @@ services:
     environment:
       - PORT=${PORT:-8000}
       - APP_MODE=${APP_MODE:-dev}
-      - SECRET_KEY=${SECRET_KEY:-${SERVICE_HEX_64_SECRETKEY:-}}
+      - SECRET_KEY=${SERVICE_HEX_64_SECRETKEY}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
     depends_on:
