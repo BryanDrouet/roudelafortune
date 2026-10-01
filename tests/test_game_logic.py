@@ -101,12 +101,18 @@ def test_secret_key_uses_shared_environment_value(monkeypatch):
     assert app_module.resolve_secret_key() == "shared-production-secret"
 
 
-def test_production_requires_configured_secret_key(monkeypatch):
+def test_production_generates_shared_secret_key_in_redis(monkeypatch):
     monkeypatch.setenv("APP_MODE", "prod")
     monkeypatch.delenv("SECRET_KEY", raising=False)
+    app_module.r.delete("app:secret_key")
 
-    with pytest.raises(RuntimeError, match="SECRET_KEY"):
-        app_module.resolve_secret_key()
+    first = app_module.resolve_secret_key()
+    second = app_module.resolve_secret_key()
+
+    # La clé générée est stable et partagée entre les appels (donc entre les workers)
+    assert first == second
+    assert len(first) >= 32
+    app_module.r.delete("app:secret_key")
 
 
 def test_valid_username_session_is_persistent(client):

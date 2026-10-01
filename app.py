@@ -132,12 +132,21 @@ random.seed()
 secure_random = random.SystemRandom()
 
 
+# Clé Redis où est conservée la clé secrète générée automatiquement
+SECRET_KEY_REDIS_KEY = "app:secret_key"
+
+
 def resolve_secret_key():
+    # 1. Priorité à la variable d'environnement si elle est fournie
     secret_key = os.getenv("SECRET_KEY")
     if secret_key:
         return secret_key
     if os.getenv("APP_MODE") == "prod":
-        raise RuntimeError("SECRET_KEY doit être configurée en production.")
+        # 2. En prod sans variable : on génère une clé une seule fois et on la
+        # partage via Redis (nx=True : le premier worker écrit, les autres lisent).
+        r.set(SECRET_KEY_REDIS_KEY, secrets.token_hex(32), nx=True)
+        return r.get(SECRET_KEY_REDIS_KEY)
+    # 3. En dev : clé fixe, jamais utilisée en production
     return "development-only-secret-key-change-before-production"
 
 
@@ -899,12 +908,14 @@ def guess():
     flash("Aucune action valide n'a été fournie.")
     return redirect(url_for("game"))
 
-## debug route to get all redis keys and values
-@app.route('/getredis')
-def get_redis():
-    keys = r.keys()
-    values = {key: r.get(key) for key in keys}
-    return values
+## Route de debug : n'existe qu'en dev. En prod elle exposerait les pseudos,
+## les curseurs et la clé secrète de session à n'importe qui.
+if os.getenv("APP_MODE") != "prod":
+    @app.route('/getredis')
+    def get_redis():
+        keys = [k for k in r.keys() if k != SECRET_KEY_REDIS_KEY]
+        values = {key: r.get(key) for key in keys}
+        return values
 
 
 ## Curseurs des joueurs, façon Figma/Canva : chacun envoie sa position, les autres la récupèrent en direct.
