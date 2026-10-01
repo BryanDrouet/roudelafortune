@@ -679,6 +679,8 @@ def restart_game():
     for player in departed_players:
         r.delete(f"game:{game_code}:score:{player}", f"game:{game_code}:cursor:{player}")
         r.srem(cursor_users_key(game_code), player)
+        # Libère aussi la réservation globale du pseudo, comme /leavegame et delete_game_room.
+        release_username(player)
 
     old_word = r.get(f"game:{game_code}:word")
 

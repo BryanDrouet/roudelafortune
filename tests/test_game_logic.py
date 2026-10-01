@@ -761,6 +761,8 @@ def test_restart_game_removes_inactive_players_and_restores_configured_rounds(cl
     r.set(f"game:{game_code}:rounds_config", 3, ex=3600)
     r.rpush(f"game:{game_code}:players", "admin", "bob", "carol")
     r.set(app_module.player_presence_key(game_code, "bob"), "1", ex=15)
+    r.set("user:bob", "bob", ex=3600)
+    r.set("user:carol", "carol", ex=3600)
     monkeypatch.setattr(app_module, "get_available_words", lambda exclude=None: "moto")
 
     client.set_cookie("username", "admin", domain="localhost")
@@ -770,6 +772,9 @@ def test_restart_game_removes_inactive_players_and_restores_configured_rounds(cl
     assert r.lrange(f"game:{game_code}:players", 0, -1) == ["admin", "bob"]
     assert r.get(f"game:{game_code}:nb_words") == "3"
     assert r.get(f"game:{game_code}:word") == "moto"
+    # Le joueur retiré (carol) récupère son pseudo ; le joueur conservé (bob) le garde.
+    assert r.get("user:carol") is None
+    assert r.get("user:bob") == "bob"
 
 
 def test_home_resumes_existing_waiting_game_after_refresh(client):
