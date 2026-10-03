@@ -247,7 +247,12 @@ def count_masked_letters(word, available_letters):
 def release_username(username):
     if not username:
         return
-    r.delete(f"user:{username}")
+    r.eval(
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+        1,
+        f"user:{username}",
+        username,
+    )
 
 
 # Prolonge la réservation seulement si elle appartient toujours à ce pseudo.
