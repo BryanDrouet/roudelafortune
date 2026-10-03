@@ -23,9 +23,10 @@ COPY . .
 # Port par défaut, modifiable au build (docker build --build-arg PORT=...) ou à l'exécution (-e PORT=...)
 ARG PORT=8000
 ENV PORT=${PORT}
+ENV APP_MODE=prod
 
 # Port exposé
 EXPOSE ${PORT}
 
 # Commande de lancement
-CMD ["sh", "-c", "exec uwsgi --ini uwsgi.ini --http 0.0.0.0:${PORT:-8000}"]
+CMD ["sh", "-c", "export PORT=${PORT:-8000}; exec uwsgi --ini uwsgi.ini"]

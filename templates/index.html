@@ -1,34 +1,71 @@
-Hello {{ code }}
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <title>Roue de la Fortune</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/variables.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/layout.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/content.css') }}">
+  </head>
+  <body data-page="index">
+    <div class="page-shell">
+      <h1>Roue de la Fortune</h1>
 
-<form action="/setusername" method="post">
-    <input type="text" name="username" placeholder="Enter your username">
-    <input type="submit" value="Set Username">
-</form>
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          {% for message in messages %}
+            <div class="system-message">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
 
-<br>
-<form action="/joingame" method="post">
-    <input type="text" name="game_code" placeholder="Enter game code">
-    <input type="submit" value="Join Game">
-</form>
+      <section class="auth-section">
+        <h2 id="username-title">Mon pseudo{% if code %} : {{ code }}{% endif %}</h2>
+        <form class="form-stack" action="/setusername" method="post">
+          <label for="username">Pseudo</label>
+          <div class="field-group pseudo-field">
+            <input id="username" type="text" name="username" placeholder="Entrez votre pseudo" required minlength="3" maxlength="20" autocomplete="pseudo" value="{{ code or '' }}">
+            <button type="submit">Valider le pseudo</button>
+          </div>
+        </form>
+      </section>
 
-{% if game_code %}
-<form action="/joingame" method="post">
-    <input type="hidden" name="game_code" value="{{ game_code }}">
-    <button type="submit">ReJoin Game: {{ game_code }}</button>
-</form>
-    
-{% endif %}
+      <div>
+        <div class="tabs" role="tablist" aria-label="Choix de la partie">
+          <button id="join-tab-button" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="join-tab" tabindex="0" data-tab="join-tab">Rejoindre</button>
+          <button id="create-tab-button" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="create-tab" tabindex="-1" data-tab="create-tab">Créer</button>
+        </div>
+        <section class="auth-section tabs-section">
+          <div class="tab-panel active" id="join-tab" role="tabpanel" aria-labelledby="join-tab-button" tabindex="0">
+            <form action="/joingame" method="post" class="form-stack">
+              <label for="game_code">Code de la partie</label>
+              <div class="field-group game-code-field">
+                <input id="game_code" type="text" name="game_code" placeholder="Entrez le code" required>
+                <button type="submit">Rejoindre</button>
+              </div>
+            </form>
+          </div>
 
-<br>
+          <div class="tab-panel" id="create-tab" role="tabpanel" aria-labelledby="create-tab-button" tabindex="0" hidden>
+            <form action="/newgame" method="post">
+              <button type="submit">Créer une nouvelle partie</button>
+            </form>
+          </div>
+        </section>
+      </div>
 
-<form action="/newgame" method="post">
-    <input type="submit" value="Create New Game">
-</form>
+      {% if game_code %}
+        <section class="auth-section">
+          <h2>Reprendre une partie</h2>
+          <form action="/joingame" method="post">
+            <input type="hidden" name="game_code" value="{{ game_code }}">
+            <button type="submit">Reprendre la partie : {{ game_code }}</button>
+          </form>
+        </section>
+      {% endif %}
+    </div>
 
-{% with messages = get_flashed_messages() %}
-    {% if messages %}
-        {% for message in messages %}
-            <p>{{ message }}</p>
-        {% endfor %}
-    {% endif %}
-{% endwith %}
+    <script src="{{ url_for('static', filename='js/site.js') }}" defer></script>
+  </body>
+</html>
