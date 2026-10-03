@@ -373,8 +373,8 @@ def set_username():
 
             # On libère l'ancien pseudo seulement s'il est différent du nouveau
             # (sinon on supprimerait la réservation qu'on vient de reprendre).
-            if current_username and current_username != username and r.get(f"user:{current_username}") == current_username:
-                r.delete(f"user:{current_username}")
+            if current_username and current_username != username:
+                release_username(current_username)
     except redis.exceptions.RedisError as exc:
         print(f"Redis error while updating username: {exc}")
         flash("Le serveur Redis est indisponible. Réessayez plus tard.")
